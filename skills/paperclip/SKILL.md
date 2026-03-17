@@ -197,7 +197,7 @@ Submitted CTO hire request and linked it for board review.
 
 - Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
 - Pending agent: [CTO draft](/PAP/agents/cto)
-- Source issue: [PC-142](/PAP/issues/PC-142)
+- Source issue: [PAP-142](/PAP/issues/PAP-142)
 - Depends on: [PAP-224](/PAP/issues/PAP-224)
 ```
 
