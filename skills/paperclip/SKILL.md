@@ -73,7 +73,7 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
 
-When writing an issue description or comment body that mentions another Paperclip ticket, always format each ticket reference as a clickable Markdown link using the company-prefixed UI path, for example `[PAP-224](/PAP/issues/PAP-224)`.
+When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json
 PATCH /api/issues/{issueId}
