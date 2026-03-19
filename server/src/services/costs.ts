@@ -1,12 +1,33 @@
-import { and, desc, eq, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNotNull, lt, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
+import { activityLog, agents, companies, costCheckpoints, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
 export interface CostDateRange {
   from?: Date;
   to?: Date;
+}
+
+type CostCheckpointRow = typeof costCheckpoints.$inferSelect;
+
+export interface CostCheckpointInterval {
+  id: string;
+  startCheckpointId: string | null;
+  startCheckpointName: string | null;
+  startAt: Date | null;
+  endCheckpointId: string | null;
+  endCheckpointName: string | null;
+  endAt: Date;
+  isOpenInterval: boolean;
+}
+
+export interface CostCheckpointReportTotals {
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  eventCount: number;
 }
 
 const METERED_BILLING_TYPE = "metered_api";
@@ -19,6 +40,45 @@ function currentUtcMonthWindow(now = new Date()) {
     start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)),
     end: new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0)),
   };
+}
+
+export function buildCostCheckpointIntervals(
+  checkpoints: CostCheckpointRow[],
+  now = new Date(),
+): CostCheckpointInterval[] {
+  const ordered = [...checkpoints].sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+  const intervals: CostCheckpointInterval[] = [];
+
+  for (let index = 1; index < ordered.length; index += 1) {
+    const start = ordered[index - 1];
+    const end = ordered[index];
+    intervals.push({
+      id: end.id,
+      startCheckpointId: start.id,
+      startCheckpointName: start.name,
+      startAt: start.createdAt,
+      endCheckpointId: end.id,
+      endCheckpointName: end.name,
+      endAt: end.createdAt,
+      isOpenInterval: false,
+    });
+  }
+
+  const latest = ordered.at(-1);
+  if (latest) {
+    intervals.push({
+      id: `${latest.id}:open`,
+      startCheckpointId: latest.id,
+      startCheckpointName: latest.name,
+      startAt: latest.createdAt,
+      endCheckpointId: null,
+      endCheckpointName: null,
+      endAt: now,
+      isOpenInterval: true,
+    });
+  }
+
+  return intervals.sort((left, right) => right.endAt.getTime() - left.endAt.getTime());
 }
 
 async function getMonthlySpendTotal(
@@ -45,7 +105,84 @@ async function getMonthlySpendTotal(
 
 export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
+  async function aggregateRange(companyId: string, range: { from?: Date | null; to?: Date | null }) {
+    const conditions = [eq(costEvents.companyId, companyId)];
+    if (range.from) conditions.push(gt(costEvents.occurredAt, range.from));
+    if (range.to) conditions.push(lte(costEvents.occurredAt, range.to));
+
+    const [row] = await db
+      .select({
+        costCents: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int`,
+        inputTokens: sql<number>`coalesce(sum(${costEvents.inputTokens}), 0)::int`,
+        cachedInputTokens: sql<number>`coalesce(sum(${costEvents.cachedInputTokens}), 0)::int`,
+        outputTokens: sql<number>`coalesce(sum(${costEvents.outputTokens}), 0)::int`,
+        eventCount: sql<number>`count(${costEvents.id})::int`,
+      })
+      .from(costEvents)
+      .where(and(...conditions));
+
+    return {
+      costCents: Number(row?.costCents ?? 0),
+      inputTokens: Number(row?.inputTokens ?? 0),
+      cachedInputTokens: Number(row?.cachedInputTokens ?? 0),
+      outputTokens: Number(row?.outputTokens ?? 0),
+      eventCount: Number(row?.eventCount ?? 0),
+    };
+  }
+
   return {
+    createCheckpoint: async (
+      companyId: string,
+      data: {
+        name: string;
+        notes?: string | null;
+        createdByAgentId?: string | null;
+        createdByUserId?: string | null;
+      },
+    ) => {
+      const [checkpoint] = await db
+        .insert(costCheckpoints)
+        .values({
+          companyId,
+          name: data.name.trim(),
+          notes: data.notes?.trim() || null,
+          createdByAgentId: data.createdByAgentId ?? null,
+          createdByUserId: data.createdByUserId ?? null,
+        })
+        .returning();
+      return checkpoint;
+    },
+
+    listCheckpoints: async (companyId: string) => {
+      return db
+        .select()
+        .from(costCheckpoints)
+        .where(eq(costCheckpoints.companyId, companyId))
+        .orderBy(desc(costCheckpoints.createdAt), desc(costCheckpoints.id));
+    },
+
+    reportByCheckpoint: async (companyId: string) => {
+      const checkpoints = await db
+        .select()
+        .from(costCheckpoints)
+        .where(eq(costCheckpoints.companyId, companyId))
+        .orderBy(asc(costCheckpoints.createdAt), asc(costCheckpoints.id));
+
+      const intervals = buildCostCheckpointIntervals(checkpoints);
+      const rows: Array<CostCheckpointInterval & CostCheckpointReportTotals> = [];
+      for (const interval of intervals) {
+        const totals = await aggregateRange(companyId, {
+          from: interval.startAt,
+          to: interval.endAt,
+        });
+        rows.push({
+          ...interval,
+          ...totals,
+        });
+      }
+      return rows;
+    },
+
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
       const agent = await db
         .select()

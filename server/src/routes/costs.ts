@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
+  createCostCheckpointSchema,
   createCostEventSchema,
   createFinanceEventSchema,
   resolveBudgetIncidentSchema,
@@ -60,6 +61,48 @@ export function costRoutes(db: Db) {
     });
 
     res.status(201).json(event);
+  });
+
+  router.get("/companies/:companyId/cost-checkpoints", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const checkpoints = await costs.listCheckpoints(companyId);
+    res.json(checkpoints);
+  });
+
+  router.post("/companies/:companyId/cost-checkpoints", validate(createCostCheckpointSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+
+    const actor = getActorInfo(req);
+    const checkpoint = await costs.createCheckpoint(companyId, {
+      ...req.body,
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      action: "cost.checkpoint_created",
+      entityType: "cost_checkpoint",
+      entityId: checkpoint.id,
+      details: { name: checkpoint.name },
+    });
+
+    res.status(201).json(checkpoint);
+  });
+
+  router.get("/companies/:companyId/costs/by-checkpoint", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    const rows = await costs.reportByCheckpoint(companyId);
+    res.json(rows);
   });
 
   router.post("/companies/:companyId/finance-events", validate(createFinanceEventSchema), async (req, res) => {

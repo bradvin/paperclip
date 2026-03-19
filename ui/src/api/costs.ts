@@ -1,4 +1,6 @@
 import type {
+  CostCheckpoint,
+  CostCheckpointReportRow,
   CostSummary,
   CostByAgent,
   CostByProviderModel,
@@ -23,6 +25,12 @@ function dateParams(from?: string, to?: string): string {
 }
 
 export const costsApi = {
+  listCheckpoints: (companyId: string) =>
+    api.get<CostCheckpoint[]>(`/companies/${companyId}/cost-checkpoints`),
+  createCheckpoint: (companyId: string, data: { name: string; notes?: string | null }) =>
+    api.post<CostCheckpoint>(`/companies/${companyId}/cost-checkpoints`, data),
+  byCheckpoint: (companyId: string) =>
+    api.get<CostCheckpointReportRow[]>(`/companies/${companyId}/costs/by-checkpoint`),
   summary: (companyId: string, from?: string, to?: string) =>
     api.get<CostSummary>(`/companies/${companyId}/costs/summary${dateParams(from, to)}`),
   byAgent: (companyId: string, from?: string, to?: string) =>

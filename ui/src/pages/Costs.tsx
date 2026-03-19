@@ -26,11 +26,13 @@ import { ProviderQuotaCard } from "../components/ProviderQuotaCard";
 import { StatusBadge } from "../components/StatusBadge";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { useToast } from "../context/ToastContext";
 import { useDateRange, PRESET_KEYS, PRESET_LABELS } from "../hooks/useDateRange";
 import { queryKeys } from "../lib/queryKeys";
-import { billingTypeDisplayName, cn, formatCents, formatTokens, providerDisplayName } from "../lib/utils";
+import { billingTypeDisplayName, cn, formatCents, formatDateTime, formatTokens, providerDisplayName } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
@@ -149,11 +151,14 @@ function FinanceSummaryCard({
 export function Costs() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
+  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance" | "checkpoints">("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
+  const [checkpointName, setCheckpointName] = useState("");
+  const [checkpointNotes, setCheckpointNotes] = useState("");
 
   const {
     preset,
@@ -260,6 +265,37 @@ export function Costs() {
       return { summary, byBiller, byKind, events };
     },
     enabled: !!selectedCompanyId && customReady,
+  });
+
+  const { data: checkpoints, isLoading: checkpointsLoading, error: checkpointsError } = useQuery({
+    queryKey: queryKeys.costCheckpoints(companyId),
+    queryFn: () => costsApi.listCheckpoints(companyId),
+    enabled: !!selectedCompanyId && mainTab === "checkpoints",
+  });
+
+  const { data: checkpointReport, isLoading: checkpointReportLoading, error: checkpointReportError } = useQuery({
+    queryKey: queryKeys.costCheckpointReport(companyId),
+    queryFn: () => costsApi.byCheckpoint(companyId),
+    enabled: !!selectedCompanyId && mainTab === "checkpoints",
+  });
+
+  const checkpointMutation = useMutation({
+    mutationFn: (input: { name: string; notes?: string | null }) =>
+      costsApi.createCheckpoint(companyId, input),
+    onSuccess: async () => {
+      setCheckpointName("");
+      setCheckpointNotes("");
+      await queryClient.invalidateQueries({ queryKey: queryKeys.costCheckpoints(companyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.costCheckpointReport(companyId) });
+      pushToast({ title: "Checkpoint created", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to create checkpoint",
+        body: error instanceof Error ? error.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
 
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
@@ -528,6 +564,17 @@ export function Costs() {
     project: budgetPolicies.filter((policy) => policy.scopeType === "project"),
   }), [budgetPolicies]);
 
+  const createCheckpointNow = () => {
+    const trimmedName = checkpointName.trim();
+    const name = trimmedName.length > 0
+      ? trimmedName
+      : `Checkpoint ${formatDateTime(new Date())}`;
+    checkpointMutation.mutate({
+      name,
+      notes: checkpointNotes.trim() || null,
+    });
+  };
+
   if (!selectedCompanyId) {
     return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
   }
@@ -624,6 +671,7 @@ export function Costs() {
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="billers">Billers</TabsTrigger>
           <TabsTrigger value="finance">Finance</TabsTrigger>
+          <TabsTrigger value="checkpoints">Checkpoints</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="mt-4 space-y-4">
@@ -1094,6 +1142,137 @@ export function Costs() {
                 <FinanceKindCard rows={financeData?.byKind ?? []} />
               </div>
             </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="checkpoints" className="mt-4 space-y-4">
+          <Card>
+            <CardHeader className="px-5 pt-5 pb-2">
+              <CardTitle className="text-base">Create checkpoint</CardTitle>
+              <CardDescription>
+                Drop a marker before and after a run to compare token and cost deltas between checkpoints.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3 px-5 pb-5 pt-2 md:grid-cols-[minmax(0,1fr),minmax(0,1.3fr),auto]">
+              <Input
+                value={checkpointName}
+                onChange={(event) => setCheckpointName(event.target.value)}
+                placeholder="Checkpoint name"
+              />
+              <Input
+                value={checkpointNotes}
+                onChange={(event) => setCheckpointNotes(event.target.value)}
+                placeholder="Notes (optional)"
+              />
+              <Button onClick={createCheckpointNow} disabled={checkpointMutation.isPending}>
+                {checkpointMutation.isPending ? "Creating..." : "Create checkpoint"}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {checkpointsError || checkpointReportError ? (
+            <p className="text-sm text-destructive">
+              {((checkpointsError ?? checkpointReportError) as Error).message}
+            </p>
+          ) : checkpointsLoading || checkpointReportLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : (
+            <div className="grid gap-4 xl:grid-cols-[0.95fr,1.25fr]">
+              <Card>
+                <CardHeader className="px-5 pt-5 pb-2">
+                  <CardTitle className="text-base">Recent checkpoints</CardTitle>
+                  <CardDescription>
+                    Named markers you can use to compare repeated workflow runs.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-2 px-5 pb-5 pt-2">
+                  {(checkpoints?.length ?? 0) === 0 ? (
+                    <p className="text-sm text-muted-foreground">No checkpoints yet.</p>
+                  ) : (
+                    checkpoints?.map((checkpoint) => (
+                      <div key={checkpoint.id} className="border border-border px-3 py-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium">{checkpoint.name}</div>
+                            <div className="text-xs text-muted-foreground">{formatDateTime(checkpoint.createdAt)}</div>
+                          </div>
+                        </div>
+                        {checkpoint.notes ? (
+                          <div className="mt-2 text-sm text-muted-foreground">{checkpoint.notes}</div>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="px-5 pt-5 pb-2">
+                  <CardTitle className="text-base">Cost by checkpoint</CardTitle>
+                  <CardDescription>
+                    Each row shows the spend and token delta between two checkpoints, plus the open interval since the latest checkpoint.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3 px-5 pb-5 pt-2">
+                  {(checkpointReport?.length ?? 0) === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      Create at least one checkpoint. After the next checkpoint, interval deltas will appear here.
+                    </p>
+                  ) : (
+                    checkpointReport?.map((row) => (
+                      <div key={row.id} className="border border-border px-4 py-3">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-medium">
+                              {row.isOpenInterval
+                                ? `${row.startCheckpointName ?? "Latest checkpoint"} -> Now`
+                                : `${row.startCheckpointName ?? "Start"} -> ${row.endCheckpointName ?? "Checkpoint"}`}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {row.startAt ? formatDateTime(row.startAt) : "Beginning"}
+                              {" to "}
+                              {formatDateTime(row.endAt)}
+                            </div>
+                          </div>
+                          <div className="text-right text-sm tabular-nums">
+                            <div className="font-medium">{formatCents(row.costCents)}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {formatTokens(row.inputTokens + row.cachedInputTokens + row.outputTokens)} tok
+                            </div>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-4">
+                          <MetricTile
+                            label="Input"
+                            value={formatTokens(row.inputTokens)}
+                            subtitle="Prompt tokens"
+                            icon={ArrowUpRight}
+                          />
+                          <MetricTile
+                            label="Cached"
+                            value={formatTokens(row.cachedInputTokens)}
+                            subtitle="Cache hits"
+                            icon={Coins}
+                          />
+                          <MetricTile
+                            label="Output"
+                            value={formatTokens(row.outputTokens)}
+                            subtitle="Completion tokens"
+                            icon={ArrowDownLeft}
+                          />
+                          <MetricTile
+                            label="Events"
+                            value={String(row.eventCount)}
+                            subtitle={row.isOpenInterval ? "Open interval" : "Closed interval"}
+                            icon={ReceiptText}
+                          />
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           )}
         </TabsContent>
       </Tabs>

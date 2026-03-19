@@ -45,6 +45,9 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
+  createCheckpoint: vi.fn(),
+  listCheckpoints: vi.fn().mockResolvedValue([]),
+  reportByCheckpoint: vi.fn().mockResolvedValue([]),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
@@ -113,6 +116,8 @@ function createAppWithActor(actor: any) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockCostService.listCheckpoints.mockResolvedValue([]);
+  mockCostService.reportByCheckpoint.mockResolvedValue([]);
   mockCompanyService.update.mockResolvedValue({
     id: "company-1",
     name: "Paperclip",
@@ -181,6 +186,87 @@ describe("cost routes", () => {
       .query({ limit: "25" });
     expect(res.status).toBe(200);
     expect(mockFinanceService.list).toHaveBeenCalledWith("company-1", undefined, 25);
+  });
+
+  it("lists cost checkpoints for board users", async () => {
+    const app = createApp();
+    const checkpoints = [
+      {
+        id: "checkpoint-1",
+        companyId: "company-1",
+        name: "Baseline",
+        notes: "Before workflow run",
+        createdByAgentId: null,
+        createdByUserId: "board-user",
+        createdAt: "2026-03-19T09:00:00.000Z",
+      },
+    ];
+    mockCostService.listCheckpoints.mockResolvedValue(checkpoints);
+
+    const res = await request(app).get("/api/companies/company-1/cost-checkpoints");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(checkpoints);
+    expect(mockCostService.listCheckpoints).toHaveBeenCalledWith("company-1");
+  });
+
+  it("creates a cost checkpoint and logs activity", async () => {
+    const app = createApp();
+    mockCostService.createCheckpoint.mockResolvedValue({
+      id: "checkpoint-1",
+      companyId: "company-1",
+      name: "After run",
+      notes: "Workflow v2",
+      createdByAgentId: null,
+      createdByUserId: "board-user",
+      createdAt: "2026-03-19T10:00:00.000Z",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/cost-checkpoints")
+      .send({ name: "After run", notes: "Workflow v2" });
+
+    expect(res.status).toBe(201);
+    expect(mockCostService.createCheckpoint).toHaveBeenCalledWith("company-1", {
+      name: "After run",
+      notes: "Workflow v2",
+      createdByAgentId: null,
+      createdByUserId: "board-user",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "cost.checkpoint_created",
+      entityType: "cost_checkpoint",
+      entityId: "checkpoint-1",
+      details: { name: "After run" },
+    }));
+  });
+
+  it("reports costs by checkpoint interval", async () => {
+    const app = createApp();
+    const rows = [
+      {
+        id: "checkpoint-2",
+        startCheckpointId: "checkpoint-1",
+        startCheckpointName: "Baseline",
+        startAt: "2026-03-19T09:00:00.000Z",
+        endCheckpointId: "checkpoint-2",
+        endCheckpointName: "Run 1",
+        endAt: "2026-03-19T10:00:00.000Z",
+        isOpenInterval: false,
+        costCents: 123,
+        inputTokens: 1000,
+        cachedInputTokens: 200,
+        outputTokens: 500,
+        eventCount: 4,
+      },
+    ];
+    mockCostService.reportByCheckpoint.mockResolvedValue(rows);
+
+    const res = await request(app).get("/api/companies/company-1/costs/by-checkpoint");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(rows);
+    expect(mockCostService.reportByCheckpoint).toHaveBeenCalledWith("company-1");
   });
 
   it("rejects company budget updates for board users outside the company", async () => {

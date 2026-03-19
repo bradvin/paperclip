@@ -21,6 +21,32 @@ export interface CostEvent {
   createdAt: Date;
 }
 
+export interface CostCheckpoint {
+  id: string;
+  companyId: string;
+  name: string;
+  notes: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+}
+
+export interface CostCheckpointReportRow {
+  id: string;
+  startCheckpointId: string | null;
+  startCheckpointName: string | null;
+  startAt: Date | null;
+  endCheckpointId: string | null;
+  endCheckpointName: string | null;
+  endAt: Date;
+  isOpenInterval: boolean;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  eventCount: number;
+}
+
 export interface CostSummary {
   companyId: string;
   spendCents: number;

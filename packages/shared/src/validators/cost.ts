@@ -24,6 +24,13 @@ export const createCostEventSchema = z.object({
 
 export type CreateCostEvent = z.infer<typeof createCostEventSchema>;
 
+export const createCostCheckpointSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  notes: z.string().trim().max(1000).optional().nullable(),
+});
+
+export type CreateCostCheckpoint = z.infer<typeof createCostCheckpointSchema>;
+
 export const updateBudgetSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative(),
 });

@@ -81,6 +81,8 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  costCheckpoints: (companyId: string) => ["cost-checkpoints", companyId] as const,
+  costCheckpointReport: (companyId: string) => ["cost-checkpoint-report", companyId] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>
     ["usage-by-provider", companyId, from, to] as const,
   usageByBiller: (companyId: string, from?: string, to?: string) =>

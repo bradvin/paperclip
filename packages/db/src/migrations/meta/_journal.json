@@ -281,6 +281,13 @@
       "when": 1773958092951,
       "tag": "0039_sticky_shotgun",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1773962281286,
+      "tag": "0040_sparkling_fat_cobra",
+      "breakpoints": true
     }
   ]
 }

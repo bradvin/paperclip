@@ -146,8 +146,10 @@ export {
 
 export {
   createCostEventSchema,
+  createCostCheckpointSchema,
   updateBudgetSchema,
   type CreateCostEvent,
+  type CreateCostCheckpoint,
   type UpdateBudget,
 } from "./cost.js";
 

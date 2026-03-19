@@ -38,6 +38,7 @@ export { issueDocuments } from "./issue_documents.js";
 export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { costEvents } from "./cost_events.js";
+export { costCheckpoints } from "./cost_checkpoints.js";
 export { financeEvents } from "./finance_events.js";
 export { approvals } from "./approvals.js";
 export { approvalComments } from "./approval_comments.js";
