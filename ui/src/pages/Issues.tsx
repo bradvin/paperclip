@@ -6,6 +6,7 @@ import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
@@ -15,6 +16,7 @@ import { CircleDot } from "lucide-react";
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -92,6 +94,27 @@ export function Issues() {
     },
   });
 
+  const createDummySuite = useMutation({
+    mutationFn: () => issuesApi.createDummySuite(selectedCompanyId!),
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) });
+      pushToast({
+        title: `Created ${result.scenarios.length} dummy issues`,
+        body: `${result.suiteTag} is ready. Agents were not woken automatically.`,
+        tone: "success",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to create dummy issues",
+        body: error instanceof Error ? error.message : "Unknown error",
+        tone: "error",
+      });
+    },
+  });
+
   if (!selectedCompanyId) {
     return <EmptyState icon={CircleDot} message="Select a company to view issues." />;
   }
@@ -109,6 +132,8 @@ export function Issues() {
       initialSearch={initialSearch}
       onSearchChange={handleSearchChange}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+      onCreateDummyIssues={() => createDummySuite.mutate()}
+      isCreatingDummyIssues={createDummySuite.isPending}
     />
   );
 }

@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   list: vi.fn(),
   create: vi.fn(),
+  addRelation: vi.fn(),
   checkout: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -170,6 +171,7 @@ describe("issue dependency route behavior", () => {
     mockIssueService.getCommentCursor.mockResolvedValue(null);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.create.mockResolvedValue(null);
+    mockIssueService.addRelation.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({
       id: "issue-1",
       status: "in_progress",
@@ -913,6 +915,80 @@ describe("issue dependency route behavior", () => {
         assigneeUserId: null,
       }),
     );
+  });
+
+  it("creates a dummy workflow suite without waking agents", async () => {
+    const createdIssues = new Map<string, any>();
+    let issueCounter = 0;
+
+    mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => {
+      issueCounter += 1;
+      const issue = {
+        id: `dummy-${issueCounter}`,
+        companyId: "company-1",
+        identifier: `PAP-${issueCounter}`,
+        title: data.title,
+        description: data.description ?? null,
+        status: data.status,
+        priority: data.priority ?? "medium",
+        assigneeAgentId: data.assigneeAgentId ?? null,
+        assigneeUserId: data.assigneeUserId ?? null,
+        createdByUserId: "user-1",
+        createdByAgentId: null,
+        reviewOwnerUserId: data.reviewOwnerUserId ?? "user-1",
+        lastEngineerAgentId: null,
+        lastQaAgentId: null,
+        hiddenAt: null,
+      };
+      createdIssues.set(issue.id, issue);
+      return issue;
+    });
+    mockIssueService.update.mockImplementation(async (id: string, data: Record<string, unknown>) => {
+      const existing = createdIssues.get(id);
+      const updated = { ...existing, ...data };
+      createdIssues.set(id, updated);
+      return updated;
+    });
+    mockIssueService.getById.mockImplementation(async (id: string) => createdIssues.get(id) ?? null);
+    mockAgentService.selectDeterministicAssignee.mockImplementation(async (_companyId: string, input: { roles: string[] }) => {
+      if (input.roles[0] === "qa") {
+        return { id: "qa-1", companyId: "company-1", role: "qa" };
+      }
+      return { id: "eng-1", companyId: "company-1", role: "engineer" };
+    });
+    mockAgentService.getCompanyCeo.mockResolvedValue({
+      id: "ceo-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+
+    const res = await request(createIssueApp()).post("/api/companies/company-1/issues/dummy-flow").send({});
+
+    expect(res.status).toBe(201);
+    expect(res.body.suiteTag).toMatch(/^20/);
+    expect(res.body.scenarios).toHaveLength(7);
+    expect(res.body.notes[0]).toContain("without waking agents automatically");
+
+    const todoScenario = res.body.scenarios.find((scenario: any) => scenario.key === "todo-routing");
+    const testingScenario = res.body.scenarios.find((scenario: any) => scenario.key === "testing-routing");
+    const reviewScenario = res.body.scenarios.find((scenario: any) => scenario.key === "in-review-routing");
+    const blockedScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocked");
+    const blockerScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocker");
+
+    expect(todoScenario.issue.assigneeAgentId).toBe("eng-1");
+    expect(testingScenario.issue.assigneeAgentId).toBe("qa-1");
+    expect(reviewScenario.issue.assigneeUserId).toBe("user-1");
+    expect(blockedScenario.issue.assigneeAgentId).toBe("eng-1");
+
+    expect(mockIssueService.addRelation).toHaveBeenCalledWith({
+      companyId: "company-1",
+      fromIssueId: blockerScenario.issue.id,
+      toIssueId: blockedScenario.issue.id,
+      relationType: "blocks",
+      createdByAgentId: null,
+      createdByUserId: "user-1",
+    });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("returns blocks and blockedBy from agents me inbox-lite", async () => {

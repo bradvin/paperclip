@@ -186,6 +186,80 @@ export function issueRoutes(db: Db, storage: StorageService) {
     };
   }
 
+  function buildDummySuiteTag(now = new Date()) {
+    return now.toISOString().replace(/\.\d{3}Z$/, "Z").replace(/[-:]/g, "");
+  }
+
+  async function logIssueAutoRouted(
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    autoRouted: {
+      reason: string;
+    },
+  ) {
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "workflow_router",
+      agentId: null,
+      runId: null,
+      action: "issue.auto_routed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        status: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+        reason: autoRouted.reason,
+      },
+    });
+  }
+
+  async function createDummyScenarioIssue(input: {
+    companyId: string;
+    actor: ReturnType<typeof getActorInfo>;
+    title: string;
+    description: string;
+    status: string;
+    reviewOwnerUserId: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    autoRoute?: boolean;
+  }) {
+    let issue = await svc.create(input.companyId, {
+      title: input.title,
+      description: input.description,
+      status: input.status,
+      priority: "medium",
+      reviewOwnerUserId: input.reviewOwnerUserId,
+      assigneeAgentId: input.assigneeAgentId,
+      assigneeUserId: input.assigneeUserId,
+      createdByAgentId: input.actor.agentId,
+      createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    });
+
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: { title: issue.title, identifier: issue.identifier, dummyFlow: true },
+    });
+
+    if (input.autoRoute) {
+      const routingResult = await maybeAutoRouteIssue(issue);
+      issue = routingResult.issue ?? issue;
+      if (routingResult.autoRouted) {
+        await logIssueAutoRouted(issue, routingResult.autoRouted);
+      }
+    }
+
+    return issue;
+  }
+
   function requireAgentRunId(req: Request, res: Response) {
     if (req.actor.type !== "agent") return null;
     const runId = req.actor.runId?.trim();
@@ -887,6 +961,187 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     res.status(201).json(issue);
+  });
+
+  router.post("/companies/:companyId/issues/dummy-flow", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can create dummy workflow issues" });
+      return;
+    }
+
+    await assertCanAssignTasks(req, companyId);
+
+    const actor = getActorInfo(req);
+    const suiteTag = buildDummySuiteTag();
+    const titlePrefix = `[Dummy Flow ${suiteTag}]`;
+    const reviewOwnerUserId = actor.actorType === "user" ? actor.actorId : null;
+    const scenarios: Array<{
+      key: string;
+      label: string;
+      expectedFlow: string;
+      issue: Awaited<ReturnType<typeof svc.create>>;
+    }> = [];
+    const notes: string[] = [
+      "Dummy issues are created without waking agents automatically so you can start runs manually and compare token usage across iterations.",
+    ];
+
+    const implementationAgent = await agentsSvc.selectDeterministicAssignee(companyId, {
+      roles: ["engineer", "devops"],
+    });
+    const qaAgent = await agentsSvc.selectDeterministicAssignee(companyId, {
+      roles: ["qa"],
+    });
+    const companyCeo = await agentsSvc.getCompanyCeo(companyId);
+
+    if (!implementationAgent && !companyCeo) {
+      notes.push("No engineer, devops, or CEO agent is available, so implementation scenarios may stay unassigned.");
+    }
+    if (!qaAgent && !companyCeo) {
+      notes.push("No QA or CEO agent is available, so testing scenarios may stay unassigned.");
+    }
+
+    const todoIssue = await createDummyScenarioIssue({
+      companyId,
+      actor,
+      title: `${titlePrefix} Todo routing scenario`,
+      description:
+        "Dummy workflow scenario.\n\nExpected: created unassigned in `todo` so the control plane routes it to an engineer or devops agent.",
+      status: "todo",
+      reviewOwnerUserId,
+      autoRoute: true,
+    });
+    scenarios.push({
+      key: "todo-routing",
+      label: "Todo routing",
+      expectedFlow: "Should land on an engineer/devops assignee without requiring a CEO heartbeat.",
+      issue: todoIssue,
+    });
+
+    const testingIssue = await createDummyScenarioIssue({
+      companyId,
+      actor,
+      title: `${titlePrefix} Testing routing scenario`,
+      description:
+        "Dummy workflow scenario.\n\nExpected: created unassigned in `testing` so the control plane routes it to QA, or the CEO if no QA agent exists.",
+      status: "testing",
+      reviewOwnerUserId,
+      autoRoute: true,
+    });
+    scenarios.push({
+      key: "testing-routing",
+      label: "Testing routing",
+      expectedFlow: "Should route to QA or CEO fallback without agent token usage.",
+      issue: testingIssue,
+    });
+
+    const inReviewIssue = await createDummyScenarioIssue({
+      companyId,
+      actor,
+      title: `${titlePrefix} Human review scenario`,
+      description:
+        "Dummy workflow scenario.\n\nExpected: created unassigned in `in_review` so the control plane assigns it to the review owner user.",
+      status: "in_review",
+      reviewOwnerUserId,
+      autoRoute: true,
+    });
+    scenarios.push({
+      key: "in-review-routing",
+      label: "Human review routing",
+      expectedFlow: "Should assign to the board review owner immediately.",
+      issue: inReviewIssue,
+    });
+
+    const reworkIssue = await createDummyScenarioIssue({
+      companyId,
+      actor,
+      title: `${titlePrefix} Rework routing scenario`,
+      description:
+        "Dummy workflow scenario.\n\nExpected: created unassigned in `rework` so the control plane routes it back to implementation.",
+      status: "rework",
+      reviewOwnerUserId,
+      autoRoute: true,
+    });
+    scenarios.push({
+      key: "rework-routing",
+      label: "Rework routing",
+      expectedFlow: "Should route to engineer/devops or CEO fallback.",
+      issue: reworkIssue,
+    });
+
+    const mergingIssue = await createDummyScenarioIssue({
+      companyId,
+      actor,
+      title: `${titlePrefix} Merging routing scenario`,
+      description:
+        "Dummy workflow scenario.\n\nExpected: created unassigned in `merging` so the control plane routes it to devops/engineering for integration work.",
+      status: "merging",
+      reviewOwnerUserId,
+      autoRoute: true,
+    });
+    scenarios.push({
+      key: "merging-routing",
+      label: "Merging routing",
+      expectedFlow: "Should route to devops/engineering or CEO fallback.",
+      issue: mergingIssue,
+    });
+
+    const dependencyBlocker = await createDummyScenarioIssue({
+      companyId,
+      actor,
+      title: `${titlePrefix} Dependency blocker`,
+      description:
+        "Dummy workflow scenario.\n\nExpected: this is the actionable blocker. Checking out the blocked companion issue should redirect here.",
+      status: "todo",
+      reviewOwnerUserId,
+      autoRoute: true,
+    });
+    scenarios.push({
+      key: "dependency-blocker",
+      label: "Dependency blocker",
+      expectedFlow: "Acts as the runnable blocker for the blocked checkout scenario.",
+      issue: dependencyBlocker,
+    });
+
+    const blockedAssigneeAgentId =
+      implementationAgent?.id ?? companyCeo?.id ?? dependencyBlocker.assigneeAgentId ?? null;
+    const dependencyBlocked = await createDummyScenarioIssue({
+      companyId,
+      actor,
+      title: `${titlePrefix} Dependency blocked checkout`,
+      description:
+        "Dummy workflow scenario.\n\nExpected: remains `blocked`. If its assignee tries to checkout this issue, Paperclip should redirect pickup to the blocker issue in the same suite.",
+      status: "blocked",
+      reviewOwnerUserId,
+      assigneeAgentId: blockedAssigneeAgentId,
+      assigneeUserId: null,
+      autoRoute: false,
+    });
+    await svc.addRelation({
+      companyId,
+      fromIssueId: dependencyBlocker.id,
+      toIssueId: dependencyBlocked.id,
+      relationType: "blocks",
+      createdByAgentId: actor.agentId,
+      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    scenarios.push({
+      key: "dependency-blocked",
+      label: "Dependency checkout redirect",
+      expectedFlow: "A blocked checkout should resolve to the blocker instead of starting blocked work directly.",
+      issue: await svc.getById(dependencyBlocked.id) ?? dependencyBlocked,
+    });
+
+    if (!blockedAssigneeAgentId) {
+      notes.push("The blocked dependency issue is unassigned because no engineer/devops/CEO agent was available to own the checkout redirect scenario.");
+    }
+
+    res.status(201).json({
+      suiteTag,
+      scenarios,
+      notes,
+    });
   });
 
   router.patch("/issues/:id", validate(updateIssueSchema), async (req, res) => {

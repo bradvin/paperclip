@@ -159,6 +159,8 @@ export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueComment,
+  DummyIssueScenario,
+  DummyIssueSuiteResult,
   IssueDocument,
   IssueDocumentSummary,
   DocumentRevision,

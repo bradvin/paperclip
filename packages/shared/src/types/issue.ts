@@ -171,6 +171,19 @@ export interface IssueComment {
   updatedAt: Date;
 }
 
+export interface DummyIssueScenario {
+  key: string;
+  label: string;
+  expectedFlow: string;
+  issue: Issue;
+}
+
+export interface DummyIssueSuiteResult {
+  suiteTag: string;
+  scenarios: DummyIssueScenario[];
+  notes: string[];
+}
+
 export interface IssueAttachment {
   id: string;
   companyId: string;

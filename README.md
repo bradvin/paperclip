@@ -4,6 +4,7 @@
 
 <p align="center">
   <a href="#quickstart"><strong>Quickstart</strong></a> &middot;
+  <a href="doc/ISSUE-STATUS-FLOW.md"><strong>Issue Flow</strong></a> &middot;
   <a href="https://paperclip.ing/docs"><strong>Docs</strong></a> &middot;
   <a href="https://github.com/paperclipai/paperclip"><strong>GitHub</strong></a> &middot;
   <a href="https://discord.gg/m4HZY7xNG3"><strong>Discord</strong></a>
@@ -22,6 +23,15 @@
 </div>
 
 <br/>
+
+> **Workflow update:** Paperclip now supports deterministic issue routing across `todo`, `testing`, `in_review`, `rework`, `merging`, and dependency-driven `blocked` work. See [`doc/ISSUE-STATUS-FLOW.md`](doc/ISSUE-STATUS-FLOW.md) for the runtime flow.
+
+## Recent additions
+
+- Deterministic server-side routing for unassigned `todo`, `testing`, `rework`, `merging`, and `in_review` issues
+- First-class workflow states for `testing`, `rework`, and `merging`
+- Dependency-aware issue checkout with native `blocks` and `blockedBy` relationships
+- Persistent workflow handoff memory so releases restore the previous queued stage instead of flattening back to `todo`
 
 ## What is Paperclip?
 
@@ -147,6 +157,7 @@ Paperclip handles the hard orchestration details correctly.
 |                                   |                                                                                                               |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
+| **Deterministic workflow routing.** | Routine issue handoffs happen in the control plane instead of depending on agent heartbeats for clerical routing. |
 | **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
 | **Runtime skill injection.**      | Agents can learn Paperclip workflows and project context at runtime, without retraining.                      |
 | **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |

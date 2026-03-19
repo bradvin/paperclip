@@ -1187,6 +1187,29 @@ export function issueService(db: Db) {
       });
     },
 
+    addRelation: async (input: {
+      companyId: string;
+      fromIssueId: string;
+      toIssueId: string;
+      relationType?: "blocks";
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    }) => {
+      const relationType = input.relationType ?? "blocks";
+      const [relation] = await db
+        .insert(issueRelations)
+        .values({
+          companyId: input.companyId,
+          fromIssueId: input.fromIssueId,
+          toIssueId: input.toIssueId,
+          relationType,
+          createdByAgentId: input.createdByAgentId ?? null,
+          createdByUserId: input.createdByUserId ?? null,
+        })
+        .returning();
+      return relation ?? null;
+    },
+
     update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
       const existing = await db
         .select()

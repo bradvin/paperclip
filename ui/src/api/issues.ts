@@ -1,5 +1,6 @@
 import type {
   Approval,
+  DummyIssueSuiteResult,
   DocumentRevision,
   Issue,
   IssueAttachment,
@@ -45,6 +46,8 @@ export const issuesApi = {
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
+  createDummySuite: (companyId: string) =>
+    api.post<DummyIssueSuiteResult>(`/companies/${companyId}/issues/dummy-flow`, {}),
   update: (id: string, data: Record<string, unknown>) => api.patch<Issue>(`/issues/${id}`, data),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
