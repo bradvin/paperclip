@@ -14,6 +14,7 @@ import {
   budgetService,
   companyPortabilityService,
   companyService,
+  heartbeatService,
   logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -24,6 +25,7 @@ export function companyRoutes(db: Db) {
   const portability = companyPortabilityService(db);
   const access = accessService(db);
   const budgets = budgetService(db);
+  const heartbeat = heartbeatService(db);
 
   router.get("/", async (req, res) => {
     assertBoard(req);
@@ -183,6 +185,68 @@ export function companyRoutes(db: Db) {
       entityId: companyId,
     });
     res.json(company);
+  });
+
+  router.post("/:companyId/stop", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.stop(companyId);
+    if (!result) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    await Promise.all(
+      result.affectedAgentIds.map((agentId) =>
+        heartbeat.cancelActiveForAgent(agentId),
+      ),
+    );
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.paused",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        affectedAgentCount: result.affectedAgentIds.length,
+      },
+    });
+
+    res.json({
+      company: result.company,
+      affectedAgentCount: result.affectedAgentIds.length,
+    });
+  });
+
+  router.post("/:companyId/start", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.start(companyId);
+    if (!result) {
+      res.status(404).json({ error: "Company not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "company.resumed",
+      entityType: "company",
+      entityId: companyId,
+      details: {
+        affectedAgentCount: result.affectedAgentIds.length,
+      },
+    });
+
+    res.json({
+      company: result.company,
+      affectedAgentCount: result.affectedAgentIds.length,
+    });
   });
 
   router.delete("/:companyId", async (req, res) => {

@@ -1,4 +1,4 @@
-import { and, count, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lt, not, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -26,7 +26,7 @@ import {
   principalPermissionGrants,
   companyMemberships,
 } from "@paperclipai/db";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
@@ -36,6 +36,8 @@ export function companyService(db: Db) {
     name: companies.name,
     description: companies.description,
     status: companies.status,
+    pauseReason: companies.pauseReason,
+    pausedAt: companies.pausedAt,
     issuePrefix: companies.issuePrefix,
     issueCounter: companies.issueCounter,
     budgetMonthlyCents: companies.budgetMonthlyCents,
@@ -146,6 +148,17 @@ export function companyService(db: Db) {
     throw new Error("Unable to allocate unique issue prefix");
   }
 
+  async function getRawCompanyById(
+    id: string,
+    database: Pick<Db, "select"> = db,
+  ) {
+    return database
+      .select()
+      .from(companies)
+      .where(eq(companies.id, id))
+      .then((rows) => rows[0] ?? null);
+  }
+
   return {
     list: async () => {
       const rows = await getCompanyQuery(db);
@@ -249,6 +262,102 @@ export function companyService(db: Db) {
         if (!row) return null;
         const [hydrated] = await hydrateCompanySpend([row], tx);
         return enrichCompany(hydrated);
+      }),
+
+    stop: (id: string) =>
+      db.transaction(async (tx) => {
+        const existing = await getRawCompanyById(id, tx);
+        if (!existing) return null;
+        if (existing.status === "archived") {
+          throw conflict("Archived companies cannot be stopped");
+        }
+
+        const now = new Date();
+        const pausedAgents = await tx
+          .update(agents)
+          .set({
+            status: "paused",
+            pauseReason: "system",
+            pausedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(agents.companyId, id),
+              not(inArray(agents.status, ["paused", "terminated", "pending_approval"])),
+            ),
+          )
+          .returning({ id: agents.id });
+
+        await tx
+          .update(companies)
+          .set({
+            status: "paused",
+            pauseReason: "manual",
+            pausedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(companies.id, id));
+
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw notFound("Company not found after stop");
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return {
+          company: enrichCompany(hydrated),
+          affectedAgentIds: pausedAgents.map((agent) => agent.id),
+        };
+      }),
+
+    start: (id: string) =>
+      db.transaction(async (tx) => {
+        const existing = await getRawCompanyById(id, tx);
+        if (!existing) return null;
+        if (existing.status === "archived") {
+          throw conflict("Archived companies cannot be started");
+        }
+        if (existing.status === "paused" && existing.pauseReason === "budget") {
+          throw conflict("Budget-paused companies cannot be started until the budget incident is resolved");
+        }
+
+        const now = new Date();
+        const resumedAgents = await tx
+          .update(agents)
+          .set({
+            status: "idle",
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(agents.companyId, id),
+              eq(agents.status, "paused"),
+              eq(agents.pauseReason, "system"),
+            ),
+          )
+          .returning({ id: agents.id });
+
+        await tx
+          .update(companies)
+          .set({
+            status: "active",
+            pauseReason: null,
+            pausedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(companies.id, id));
+
+        const row = await getCompanyQuery(tx)
+          .where(eq(companies.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw notFound("Company not found after start");
+        const [hydrated] = await hydrateCompanySpend([row], tx);
+        return {
+          company: enrichCompany(hydrated),
+          affectedAgentIds: resumedAgents.map((agent) => agent.id),
+        };
       }),
 
     remove: (id: string) =>

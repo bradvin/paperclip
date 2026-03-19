@@ -122,6 +122,7 @@ export {
 
 export type {
   Company,
+  CompanyControlResult,
   InstanceExperimentalSettings,
   InstanceSettings,
   Agent,
@@ -179,6 +180,8 @@ export type {
   BudgetPolicyUpsertInput,
   BudgetIncidentResolutionInput,
   CostEvent,
+  CostCheckpoint,
+  CostCheckpointReportRow,
   CostSummary,
   CostByAgent,
   CostByProviderModel,
@@ -347,6 +350,7 @@ export {
   type RotateSecret,
   type UpdateSecret,
   createCostEventSchema,
+  createCostCheckpointSchema,
   createFinanceEventSchema,
   updateBudgetSchema,
   createAssetImageMetadataSchema,
@@ -358,6 +362,7 @@ export {
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   type CreateCostEvent,
+  type CreateCostCheckpoint,
   type CreateFinanceEvent,
   type UpdateBudget,
   type CreateAssetImageMetadata,

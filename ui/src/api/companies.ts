@@ -1,5 +1,6 @@
 import type {
   Company,
+  CompanyControlResult,
   CompanyPortabilityExportResult,
   CompanyPortabilityImportRequest,
   CompanyPortabilityImportResult,
@@ -29,6 +30,8 @@ export const companiesApi = {
       >
     >,
   ) => api.patch<Company>(`/companies/${companyId}`, data),
+  stop: (companyId: string) => api.post<CompanyControlResult>(`/companies/${companyId}/stop`, {}),
+  start: (companyId: string) => api.post<CompanyControlResult>(`/companies/${companyId}/start`, {}),
   archive: (companyId: string) => api.post<Company>(`/companies/${companyId}/archive`, {}),
   remove: (companyId: string) => api.delete<{ ok: true }>(`/companies/${companyId}`),
   exportBundle: (companyId: string, data: { include?: { company?: boolean; agents?: boolean } }) =>

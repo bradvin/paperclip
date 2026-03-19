@@ -32,6 +32,7 @@
 - First-class workflow states for `testing`, `rework`, and `merging`
 - Dependency-aware issue checkout with native `blocks` and `blockedBy` relationships
 - Persistent workflow handoff memory so releases restore the previous queued stage instead of flattening back to `todo`
+- Company-level `STOP` / `START` controls so the board can pause or resume an entire company’s agents in one action
 
 ## What is Paperclip?
 
@@ -157,6 +158,7 @@ Paperclip handles the hard orchestration details correctly.
 |                                   |                                                                                                               |
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
+| **Instant company stop/start.**  | The board can pause an entire company at once, cancel active heartbeats, and later resume only the agents stopped by that action. |
 | **Deterministic workflow routing.** | Routine issue handoffs happen in the control plane instead of depending on agent heartbeats for clerical routing. |
 | **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
 | **Runtime skill injection.**      | Agents can learn Paperclip workflows and project context at runtime, without retraining.                      |

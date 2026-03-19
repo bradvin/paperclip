@@ -2,12 +2,14 @@ import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { Settings, Check } from "lucide-react";
+import { StatusBadge } from "../components/StatusBadge";
+import { Settings, Check, Pause, Play } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -30,6 +32,7 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const { pushToast } = useToast();
 
   // General settings local state
   const [companyName, setCompanyName] = useState("");
@@ -51,6 +54,23 @@ export function CompanySettings() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
+
+  async function invalidateCompanyRuntimeQueries(companyId: string) {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.org(companyId) }),
+      queryClient.invalidateQueries({
+        predicate: ({ queryKey }) => Array.isArray(queryKey) && queryKey[0] === "agents"
+      })
+    ]);
+  }
 
   const generalDirty =
     !!selectedCompany &&
@@ -76,6 +96,24 @@ export function CompanySettings() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  const companyControlMutation = useMutation({
+    mutationFn: (action: "stop" | "start") =>
+      action === "stop"
+        ? companiesApi.stop(selectedCompanyId!)
+        : companiesApi.start(selectedCompanyId!),
+    onSuccess: async (result, action) => {
+      await invalidateCompanyRuntimeQueries(result.company.id);
+      pushToast({
+        title: action === "stop" ? "Company stopped" : "Company started",
+        body:
+          action === "stop"
+            ? `${result.company.name} paused ${result.affectedAgentCount} agent${result.affectedAgentCount === 1 ? "" : "s"}.`
+            : `${result.company.name} resumed ${result.affectedAgentCount} agent${result.affectedAgentCount === 1 ? "" : "s"}.`,
+        tone: "success"
+      });
     }
   });
 
@@ -218,11 +256,85 @@ export function CompanySettings() {
     });
   }
 
+  const startBlockedByBudget =
+    selectedCompany.status === "paused" && selectedCompany.pauseReason === "budget";
+  const runtimeAction = selectedCompany.status === "paused" ? "start" : "stop";
+  const runtimeActionLabel = runtimeAction === "stop" ? "STOP" : "START";
+  const runtimeHelpText =
+    selectedCompany.status === "paused"
+      ? startBlockedByBudget
+        ? "This company is paused by a budget hard-stop. Resolve the budget incident before starting agents again."
+        : "Starting the company resumes the agents that were stopped by the company control."
+      : "Stopping the company pauses all runnable agents in this company and cancels their active heartbeats.";
+
   return (
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
         <Settings className="h-5 w-5 text-muted-foreground" />
         <h1 className="text-lg font-semibold">Company Settings</h1>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Runtime Control
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Company runtime</span>
+                <StatusBadge status={selectedCompany.status} />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {runtimeHelpText}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant={runtimeAction === "stop" ? "destructive" : "default"}
+              disabled={
+                companyControlMutation.isPending ||
+                selectedCompany.status === "archived" ||
+                startBlockedByBudget
+              }
+              onClick={() => {
+                if (!selectedCompanyId) return;
+                if (runtimeAction === "stop") {
+                  const confirmed = window.confirm(
+                    `Stop company "${selectedCompany.name}"? This will pause its agents and cancel active heartbeats.`
+                  );
+                  if (!confirmed) return;
+                }
+                companyControlMutation.mutate(runtimeAction);
+              }}
+            >
+              {companyControlMutation.isPending ? (
+                runtimeAction === "stop" ? "Stopping..." : "Starting..."
+              ) : (
+                <>
+                  {runtimeAction === "stop" ? (
+                    <Pause className="h-3.5 w-3.5 mr-1.5" />
+                  ) : (
+                    <Play className="h-3.5 w-3.5 mr-1.5" />
+                  )}
+                  {runtimeActionLabel}
+                </>
+              )}
+            </Button>
+          </div>
+          {selectedCompany.pauseReason && (
+            <p className="text-xs text-muted-foreground">
+              Pause reason: {selectedCompany.pauseReason.replace(/_/g, " ")}
+            </p>
+          )}
+          {companyControlMutation.isError && (
+            <p className="text-xs text-destructive">
+              {companyControlMutation.error instanceof Error
+                ? companyControlMutation.error.message
+                : "Failed to change company runtime state"}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* General */}

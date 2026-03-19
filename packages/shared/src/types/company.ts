@@ -18,3 +18,8 @@ export interface Company {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface CompanyControlResult {
+  company: Company;
+  affectedAgentCount: number;
+}
