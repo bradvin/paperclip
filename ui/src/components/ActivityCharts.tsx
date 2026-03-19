@@ -160,6 +160,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 const statusColors: Record<string, string> = {
   todo: "#3b82f6",
   in_progress: "#8b5cf6",
+  testing: "#06b6d4",
   in_review: "#a855f7",
   rework: "#f97316",
   merging: "#14b8a6",
@@ -172,6 +173,7 @@ const statusColors: Record<string, string> = {
 const statusLabels: Record<string, string> = {
   todo: "To Do",
   in_progress: "In Progress",
+  testing: "Testing",
   in_review: "In Review",
   rework: "Rework",
   merging: "Merging",
@@ -194,7 +196,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
     allStatuses.add(issue.status);
   }
 
-  const statusOrder = ["todo", "in_progress", "in_review", "rework", "merging", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
+  const statusOrder = ["todo", "in_progress", "testing", "in_review", "rework", "merging", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 

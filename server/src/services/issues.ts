@@ -36,6 +36,7 @@ const ALL_ISSUE_STATUSES = [
   "backlog",
   "todo",
   "in_progress",
+  "testing",
   "in_review",
   "rework",
   "merging",
@@ -842,7 +843,7 @@ export function issueService(db: Db) {
           eq(issues.companyId, blocker.companyId),
           inArray(issues.id, dependentIds),
           isNull(issues.hiddenAt),
-          inArray(issues.status, ["todo", "rework", "merging", "blocked"]),
+          inArray(issues.status, ["todo", "testing", "rework", "merging", "blocked"]),
         ),
       )
       .orderBy(asc(priorityOrder), desc(issues.updatedAt));

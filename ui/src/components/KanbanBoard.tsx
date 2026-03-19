@@ -26,6 +26,7 @@ const boardStatuses = [
   "backlog",
   "todo",
   "in_progress",
+  "testing",
   "in_review",
   "rework",
   "merging",

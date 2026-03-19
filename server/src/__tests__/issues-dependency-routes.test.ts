@@ -12,6 +12,7 @@ const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getCommentCursor: vi.fn(),
   getComment: vi.fn(),
+  assertCheckoutOwner: vi.fn(),
   list: vi.fn(),
   checkout: vi.fn(),
   update: vi.fn(),
@@ -134,6 +135,24 @@ function createAgentApp() {
   return app;
 }
 
+function createAgentIssueApp() {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = {
+      type: "agent",
+      agentId: "00000000-0000-4000-8000-0000000000a1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "api_key",
+    };
+    next();
+  });
+  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use(errorHandler);
+  return app;
+}
+
 describe("issue dependency route behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -148,6 +167,13 @@ describe("issue dependency route behavior", () => {
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getCommentCursor.mockResolvedValue(null);
     mockIssueService.getComment.mockResolvedValue(null);
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({
+      id: "issue-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      checkoutRunId: "run-1",
+      adoptedFromRunId: null,
+    });
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       body: "Please address the review feedback.",
@@ -391,6 +417,126 @@ describe("issue dependency route behavior", () => {
     });
   });
 
+  it("lets the current assignee move finished dev work to testing and clear assignment", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-6",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-6",
+      companyId: "company-1",
+      identifier: "PAP-6",
+      title: "Ready for QA",
+      status: "testing",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-6")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        comment: "Implementation complete. Ready for QA.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-6",
+      expect.objectContaining({
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }),
+    );
+  });
+
+  it("lets the current assignee move failed QA work to rework and clear assignment", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-7",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-7",
+      companyId: "company-1",
+      identifier: "PAP-7",
+      title: "QA found regressions",
+      status: "rework",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-7")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "rework",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        comment: "QA found issues that need another dev pass.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-7",
+      expect.objectContaining({
+        status: "rework",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }),
+    );
+  });
+
+  it("lets the current assignee hand work to the creator user for human review", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-8",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-8",
+      companyId: "company-1",
+      identifier: "PAP-8",
+      title: "Ready for human review",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "user-1",
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-8")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: "user-1",
+        comment: "QA passed. Ready for human review.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-8",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: "user-1",
+      }),
+    );
+  });
+
   it("returns blocks and blockedBy from agents me inbox-lite", async () => {
     mockIssueService.list.mockResolvedValue([
       {
@@ -432,7 +578,7 @@ describe("issue dependency route behavior", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.list).toHaveBeenCalledWith("company-1", {
       assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
-      status: "todo,in_progress,rework,merging,blocked",
+      status: "todo,in_progress,testing,rework,merging,blocked",
     });
     expect(res.body[0]).toMatchObject({
       id: "issue-1",

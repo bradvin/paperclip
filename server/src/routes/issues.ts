@@ -37,6 +37,7 @@ import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const ORCHESTRATION_ISSUE_STATUSES = new Set(["rework", "merging"]);
+const AGENT_SELF_UNASSIGNABLE_STATUSES = new Set(["testing", "rework"]);
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -838,9 +839,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       typeof updateFields.assigneeUserId === "string" &&
       !!existing.createdByUserId &&
       updateFields.assigneeUserId === existing.createdByUserId;
+    const isAgentSelfUnassigningForWorkflow =
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      existing.assigneeAgentId === req.actor.agentId &&
+      updateFields.assigneeAgentId === null &&
+      updateFields.assigneeUserId === null &&
+      requestedStatus !== null &&
+      AGENT_SELF_UNASSIGNABLE_STATUSES.has(requestedStatus);
 
     if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator) {
+      if (!isAgentReturningIssueToCreator && !isAgentSelfUnassigningForWorkflow) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }

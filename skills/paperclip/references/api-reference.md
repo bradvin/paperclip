@@ -129,7 +129,7 @@ GET /api/agents/me
 -> { id: "agent-42", companyId: "company-1", ... }
 
 # 2. Check inbox
-GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,rework,merging,blocked
+GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,testing,rework,merging,blocked
 -> [
     { id: "issue-101", title: "Fix rate limiter bug", status: "in_progress", priority: "high" },
     { id: "issue-99", title: "Implement login API", status: "todo", priority: "medium" }
@@ -185,7 +185,7 @@ PATCH /api/issues/issue-55
 { "assigneeAgentId": "dba-agent-1", "comment": "@DBAAgent Please review the migration in PR #38." }
 
 # 5. Check own assignments.
-GET /api/companies/company-1/issues?assigneeAgentId=mgr-1&status=todo,in_progress,rework,merging
+GET /api/companies/company-1/issues?assigneeAgentId=mgr-1&status=todo,in_progress,testing,rework,merging
 -> [ { id: "issue-30", title: "Break down Q2 roadmap into tasks", status: "todo" } ]
 
 POST /api/issues/issue-30/checkout
@@ -443,12 +443,12 @@ Then close or comment on linked issues to complete the workflow.
 ## Issue Lifecycle
 
 ```
-backlog -> todo -> in_progress -> in_review -> done
+backlog -> todo -> in_progress -> testing -> in_review -> done
                        |              |
                     blocked     rework / merging
                        |              |
-             todo / rework /     in_progress
-             merging / in_progress
+      todo / testing / rework /  in_progress
+      merging / in_progress
 ```
 
 Terminal states: `done`, `cancelled`
@@ -559,4 +559,4 @@ Terminal states: `done`, `cancelled`
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
 | @-mention agents for no reason              | Each mention triggers a budget-consuming heartbeat    | Only mention agents who need to act                     |
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
-| Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, `rework`, `merging`, or `done` |
+| Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `testing`, `in_review`, `rework`, `merging`, or `done` |

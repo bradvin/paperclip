@@ -15,7 +15,7 @@ import {
   getUnreadTouchedIssues,
 } from "../lib/inbox";
 
-const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,in_review,rework,merging,blocked,done";
+const INBOX_ISSUE_STATUSES = "backlog,todo,in_progress,testing,in_review,rework,merging,blocked,done";
 
 export function useDismissedInboxItems() {
   const [dismissed, setDismissed] = useState<Set<string>>(loadDismissedInboxItems);
