@@ -373,6 +373,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
         parentId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        blocks: issue.blocks ?? [],
+        blockedBy: issue.blockedBy ?? [],
         updatedAt: issue.updatedAt,
       },
       ancestors: ancestors.map((ancestor) => ({
@@ -915,6 +917,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
       req.body.status !== undefined;
+    const statusChangedToResolved =
+      req.body.status !== undefined &&
+      existing.status !== issue.status &&
+      (issue.status === "done" || issue.status === "cancelled");
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -942,6 +948,31 @@ export function issueRoutes(db: Db, storage: StorageService) {
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
         });
+      }
+
+      if (statusChangedToResolved) {
+        const dependents = await svc.listWakeableDependentsForResolvedBlocker(issue.id);
+        for (const dependent of dependents) {
+          if (wakeups.has(dependent.assigneeAgentId)) continue;
+          wakeups.set(dependent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_unblocked",
+            payload: {
+              issueId: dependent.id,
+              unblockedByIssueId: issue.id,
+              mutation: "dependency_resolved",
+            },
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: dependent.id,
+              source: "issue.unblocked",
+              wakeReason: "issue_unblocked",
+              unblockedByIssueId: issue.id,
+            },
+          });
+        }
       }
 
       if (commentBody && comment) {
@@ -1054,17 +1085,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+    const requestedIssueId = issue.id;
+    const checkedOutIssueId = updated.id;
 
     await logActivity(db, {
-      companyId: issue.companyId,
+      companyId: updated.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
       action: "issue.checked_out",
       entityType: "issue",
-      entityId: issue.id,
-      details: { agentId: req.body.agentId },
+      entityId: checkedOutIssueId,
+      details: {
+        agentId: req.body.agentId,
+        requestedIssueId,
+        redirectedFromBlockedIssue: checkedOutIssueId !== requestedIssueId,
+      },
     });
 
     if (
@@ -1080,12 +1117,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_checked_out",
-          payload: { issueId: issue.id, mutation: "checkout" },
+          payload: { issueId: checkedOutIssueId, mutation: "checkout" },
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.checkout" },
+          contextSnapshot: { issueId: checkedOutIssueId, source: "issue.checkout" },
         })
-        .catch((err) => logger.warn({ err, issueId: issue.id }, "failed to wake assignee on issue checkout"));
+        .catch((err) => logger.warn({ err, issueId: checkedOutIssueId }, "failed to wake assignee on issue checkout"));
     }
 
     res.json(updated);

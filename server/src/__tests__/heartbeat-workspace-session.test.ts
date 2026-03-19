@@ -168,6 +168,10 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "issue_commented" })).toBe(false);
   });
 
+  it("does not reset session context when an issue becomes unblocked", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_unblocked" })).toBe(false);
+  });
+
   it("does not reset when wake reason is missing", () => {
     expect(shouldResetTaskSessionForWake({})).toBe(false);
   });

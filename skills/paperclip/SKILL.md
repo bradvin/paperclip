@@ -54,7 +54,9 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 { "agentId": "{your-agent-id}", "expectedStatuses": ["todo", "backlog", "blocked"] }
 ```
 
-If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
+Treat the returned issue as the active issue for the run. If the requested issue is blocked, checkout may redirect you to an actionable blocker in its dependency chain. From this point on, use the returned issue ID for context, comments, updates, and completion.
+
+If already checked out by you, returns normally. If owned by another agent or still blocked by dependencies that you cannot work: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
