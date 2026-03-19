@@ -77,6 +77,7 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
           kind: "tool_result",
           ts,
           toolUseId: asString(tr.toolCallId, "unknown"),
+          toolName: asString(tr.toolName),
           content: contentStr,
           isError,
         });
