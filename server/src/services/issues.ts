@@ -31,7 +31,11 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
-import { assertIssueStatusTransition, isAssignableAgentStatus } from "./issue-workflow.js";
+import {
+  assertIssueStatusTransition,
+  isAssignableAgentStatus,
+  resolveReleaseStatus,
+} from "./issue-workflow.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -646,6 +650,7 @@ export function issueService(db: Db) {
         id: agents.id,
         companyId: agents.companyId,
         status: agents.status,
+        role: agents.role,
       })
       .from(agents)
       .where(eq(agents.id, agentId))
@@ -658,6 +663,7 @@ export function issueService(db: Db) {
     if (!isAssignableAgentStatus(assignee.status)) {
       throw conflict(`Cannot assign work to ${assignee.status} agents`);
     }
+    return assignee;
   }
 
   async function assertAssignableUser(companyId: string, userId: string) {
@@ -1089,6 +1095,9 @@ export function issueService(db: Db) {
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
+      if (data.reviewOwnerUserId) {
+        await assertAssignableUser(companyId, data.reviewOwnerUserId);
+      }
       if (data.projectWorkspaceId) {
         await assertValidProjectWorkspace(companyId, data.projectId, data.projectWorkspaceId);
       }
@@ -1147,6 +1156,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          reviewOwnerUserId: issueData.reviewOwnerUserId ?? issueData.createdByUserId ?? null,
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
             goalId: issueData.goalId,
@@ -1209,6 +1219,8 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const nextReviewOwnerUserId =
+        issueData.reviewOwnerUserId !== undefined ? issueData.reviewOwnerUserId : existing.reviewOwnerUserId;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -1221,6 +1233,9 @@ export function issueService(db: Db) {
       }
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+      }
+      if (issueData.reviewOwnerUserId) {
+        await assertAssignableUser(existing.companyId, issueData.reviewOwnerUserId);
       }
       const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
@@ -1235,6 +1250,11 @@ export function issueService(db: Db) {
       }
 
       applyStatusSideEffects(issueData.status, patch);
+      if (issueData.reviewOwnerUserId !== undefined) {
+        patch.reviewOwnerUserId = nextReviewOwnerUserId;
+      } else if (issueData.assigneeUserId !== undefined && nextAssigneeUserId) {
+        patch.reviewOwnerUserId = nextAssigneeUserId;
+      }
       if (issueData.status && issueData.status !== "done") {
         patch.completedAt = null;
       }
@@ -1243,12 +1263,16 @@ export function issueService(db: Db) {
       }
       if (issueData.status && issueData.status !== "in_progress") {
         patch.checkoutRunId = null;
+        patch.queuedStatusBeforeCheckout = null;
       }
       if (
         (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
         (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
       ) {
         patch.checkoutRunId = null;
+        if (issueData.status !== "in_progress") {
+          patch.queuedStatusBeforeCheckout = null;
+        }
       }
 
       return db.transaction(async (tx) => {
@@ -1316,7 +1340,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      await assertAssignableAgent(issueCompany.companyId, agentId);
+      const checkoutAgent = await assertAssignableAgent(issueCompany.companyId, agentId);
 
       const targetResolution = await resolveCheckoutTarget(id, issueCompany.companyId, agentId);
       if (targetResolution.kind === "blocked") {
@@ -1348,6 +1372,15 @@ export function issueService(db: Db) {
           executionRunId: checkoutRunId,
           status: "in_progress",
           startedAt: now,
+          queuedStatusBeforeCheckout: sql`${issues.status}`,
+          lastEngineerAgentId:
+            checkoutAgent.role === "engineer" || checkoutAgent.role === "devops"
+              ? agentId
+              : sql`${issues.lastEngineerAgentId}`,
+          lastQaAgentId:
+            checkoutAgent.role === "qa"
+              ? agentId
+              : sql`${issues.lastQaAgentId}`,
           updatedAt: now,
         })
         .where(
@@ -1538,9 +1571,14 @@ export function issueService(db: Db) {
       const updated = await db
         .update(issues)
         .set({
-          status: "todo",
+          status: resolveReleaseStatus(existing.queuedStatusBeforeCheckout),
           assigneeAgentId: null,
+          assigneeUserId: null,
           checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          queuedStatusBeforeCheckout: null,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, id))

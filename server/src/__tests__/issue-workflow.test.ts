@@ -3,6 +3,7 @@ import {
   assertIssueStatusTransition,
   canTransitionIssueStatus,
   isAssignableAgentStatus,
+  resolveReleaseStatus,
 } from "../services/issue-workflow.js";
 
 describe("issue workflow rules", () => {
@@ -35,5 +36,15 @@ describe("issue workflow rules", () => {
     expect(isAssignableAgentStatus("paused")).toBe(false);
     expect(isAssignableAgentStatus("pending_approval")).toBe(false);
     expect(isAssignableAgentStatus("terminated")).toBe(false);
+  });
+
+  it("restores the queued workflow stage on release", () => {
+    expect(resolveReleaseStatus("testing")).toBe("testing");
+    expect(resolveReleaseStatus("rework")).toBe("rework");
+    expect(resolveReleaseStatus("merging")).toBe("merging");
+    expect(resolveReleaseStatus("todo")).toBe("todo");
+    expect(resolveReleaseStatus("in_progress")).toBe("todo");
+    expect(resolveReleaseStatus("done")).toBe("todo");
+    expect(resolveReleaseStatus(null)).toBe("todo");
   });
 });

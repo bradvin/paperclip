@@ -197,6 +197,11 @@ Invariant: at least one root `company` level goal per company.
 - `status` enum: `backlog | todo | in_progress | testing | in_review | rework | merging | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
 - `assignee_agent_id` uuid fk `agents.id` null
+- `assignee_user_id` uuid/text fk `users.id` null
+- `review_owner_user_id` uuid/text fk `users.id` null
+- `queued_status_before_checkout` text null
+- `last_engineer_agent_id` uuid fk `agents.id` null
+- `last_qa_agent_id` uuid fk `agents.id` null
 - `created_by_agent_id` uuid fk `agents.id` null
 - `created_by_user_id` uuid fk `users.id` null
 - `request_depth` int not null default 0
@@ -408,6 +413,7 @@ Allowed transitions:
 Side effects:
 
 - entering `in_progress` sets `started_at` if null
+- checkout remembers the prior queued workflow status so release can restore the same stage
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
 
@@ -519,7 +525,7 @@ Server behavior:
 
 1. single SQL update with `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
 2. if updated row count is 0, return `409` with current owner/status
-3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+3. successful checkout sets `assignee_agent_id`, `status = in_progress`, `started_at`, and `queued_status_before_checkout`
 
 ## 10.5 Projects
 

@@ -119,10 +119,14 @@ export interface Issue {
   priority: IssuePriority;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  reviewOwnerUserId: string | null;
   checkoutRunId: string | null;
   executionRunId: string | null;
   executionAgentNameKey: string | null;
   executionLockedAt: Date | null;
+  queuedStatusBeforeCheckout: string | null;
+  lastEngineerAgentId: string | null;
+  lastQaAgentId: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   issueNumber: number | null;

@@ -35,3 +35,17 @@ export function assertIssueStatusTransition(from: string, to: string) {
   if (canTransitionIssueStatus(from, to)) return;
   throw conflict(`Invalid issue status transition: ${from} -> ${to}`);
 }
+
+export function resolveReleaseStatus(
+  queuedStatusBeforeCheckout: string | null | undefined,
+) {
+  if (
+    queuedStatusBeforeCheckout &&
+    queuedStatusBeforeCheckout !== "in_progress" &&
+    queuedStatusBeforeCheckout !== "done" &&
+    queuedStatusBeforeCheckout !== "cancelled"
+  ) {
+    return queuedStatusBeforeCheckout;
+  }
+  return "todo";
+}
