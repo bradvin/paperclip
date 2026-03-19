@@ -209,8 +209,26 @@ Invariants:
 
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
+- hierarchy (`parent_id`) is distinct from dependency relations; blocked work is modeled separately
 - `in_progress` requires assignee
 - terminal states: `done | cancelled`
+
+## 7.6.1 `issue_relations`
+
+- `company_id` uuid fk not null
+- `from_issue_id` uuid fk `issues.id` not null
+- `to_issue_id` uuid fk `issues.id` not null
+- `relation_type` enum/text: `blocks`
+- `created_by_agent_id` uuid fk `agents.id` null
+- `created_by_user_id` uuid fk `users.id` null
+- `created_at` timestamptz not null
+
+Invariants:
+
+- relations are directed
+- hierarchy is not encoded here; `parent_id` remains the subtask/tree relationship
+- `blocks` means `from_issue_id` blocks `to_issue_id`
+- both referenced issues must belong to the same company
 
 ## 7.7 `issue_comments`
 

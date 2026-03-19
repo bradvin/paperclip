@@ -1,4 +1,4 @@
-import type { IssuePriority, IssueStatus } from "../constants.js";
+import type { IssuePriority, IssueRelationType, IssueStatus } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -44,6 +44,17 @@ export interface IssueLabel {
   color: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface IssueRelationSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  relationType: IssueRelationType;
 }
 
 export interface IssueAssigneeAdapterOverrides {
@@ -128,6 +139,8 @@ export interface Issue {
   hiddenAt: Date | null;
   labelIds?: string[];
   labels?: IssueLabel[];
+  blocks?: IssueRelationSummary[];
+  blockedBy?: IssueRelationSummary[];
   planDocument?: IssueDocument | null;
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;

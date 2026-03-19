@@ -13,6 +13,7 @@ import {
   issueLabels,
   issueComments,
   issueDocuments,
+  issueRelations,
   issueReadStates,
   issues,
   labels,
@@ -73,6 +74,17 @@ export interface IssueFilters {
 
 type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
+type IssueRelationRow = typeof issueRelations.$inferSelect;
+type IssueRelationSummaryRow = {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+};
+type IssueRelationWithType = IssueRelationSummaryRow & Pick<IssueRelationRow, "relationType">;
 type IssueActiveRunRow = {
   id: string;
   status: string;
@@ -84,7 +96,11 @@ type IssueActiveRunRow = {
   createdAt: Date;
 };
 type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
-type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
+type IssueWithRelations = IssueWithLabels & {
+  blocks: IssueRelationWithType[];
+  blockedBy: IssueRelationWithType[];
+};
+type IssueWithRelationsAndRun = IssueWithRelations & { activeRun: IssueActiveRunRow | null };
 type IssueUserCommentStats = {
   issueId: string;
   myLastCommentAt: Date | null;
@@ -102,6 +118,92 @@ function redactIssueComment<T extends { body: string }>(comment: T): T {
     ...comment,
     body: redactCurrentUserText(comment.body),
   };
+}
+
+async function relationMapsForIssues(
+  dbOrTx: any,
+  issueIds: string[],
+): Promise<{
+  blocksByIssueId: Map<string, IssueRelationWithType[]>;
+  blockedByIssueId: Map<string, IssueRelationWithType[]>;
+}> {
+  const blocksByIssueId = new Map<string, IssueRelationWithType[]>();
+  const blockedByIssueId = new Map<string, IssueRelationWithType[]>();
+  if (issueIds.length === 0) {
+    return { blocksByIssueId, blockedByIssueId };
+  }
+
+  const outgoing = await dbOrTx
+    .select({
+      sourceIssueId: issueRelations.fromIssueId,
+      relatedIssueId: issueRelations.toIssueId,
+      relationType: issueRelations.relationType,
+    })
+    .from(issueRelations)
+    .where(
+      and(
+        inArray(issueRelations.fromIssueId, issueIds),
+        eq(issueRelations.relationType, "blocks"),
+      ),
+    )
+    .orderBy(asc(issueRelations.createdAt), asc(issueRelations.toIssueId));
+
+  const incoming = await dbOrTx
+    .select({
+      sourceIssueId: issueRelations.toIssueId,
+      relatedIssueId: issueRelations.fromIssueId,
+      relationType: issueRelations.relationType,
+    })
+    .from(issueRelations)
+    .where(
+      and(
+        inArray(issueRelations.toIssueId, issueIds),
+        eq(issueRelations.relationType, "blocks"),
+      ),
+    )
+    .orderBy(asc(issueRelations.createdAt), asc(issueRelations.fromIssueId));
+
+  const relatedIssueIds = [...new Set([...outgoing, ...incoming].map((row) => row.relatedIssueId))];
+  if (relatedIssueIds.length === 0) {
+    return { blocksByIssueId, blockedByIssueId };
+  }
+
+  const relatedIssues = await dbOrTx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+      priority: issues.priority,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+    })
+    .from(issues)
+    .where(inArray(issues.id, relatedIssueIds));
+
+  const relatedById = new Map<string, IssueRelationSummaryRow>(
+    relatedIssues.map((row: IssueRelationSummaryRow) => [row.id, row]),
+  );
+
+  for (const row of outgoing) {
+    const related = relatedById.get(row.relatedIssueId);
+    if (!related) continue;
+    const existing = blocksByIssueId.get(row.sourceIssueId);
+    const summary: IssueRelationWithType = { ...related, relationType: row.relationType };
+    if (existing) existing.push(summary);
+    else blocksByIssueId.set(row.sourceIssueId, [summary]);
+  }
+
+  for (const row of incoming) {
+    const related = relatedById.get(row.relatedIssueId);
+    if (!related) continue;
+    const existing = blockedByIssueId.get(row.sourceIssueId);
+    const summary: IssueRelationWithType = { ...related, relationType: row.relationType };
+    if (existing) existing.push(summary);
+    else blockedByIssueId.set(row.sourceIssueId, [summary]);
+  }
+
+  return { blocksByIssueId, blockedByIssueId };
 }
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
@@ -270,6 +372,19 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
   });
 }
 
+async function withIssueRelations(dbOrTx: any, rows: IssueWithLabels[]): Promise<IssueWithRelations[]> {
+  if (rows.length === 0) return [];
+  const { blocksByIssueId, blockedByIssueId } = await relationMapsForIssues(
+    dbOrTx,
+    rows.map((row) => row.id),
+  );
+  return rows.map((row) => ({
+    ...row,
+    blocks: blocksByIssueId.get(row.id) ?? [],
+    blockedBy: blockedByIssueId.get(row.id) ?? [],
+  }));
+}
+
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
 
 async function activeRunMapForIssues(
@@ -308,9 +423,9 @@ async function activeRunMapForIssues(
 }
 
 function withActiveRuns(
-  issueRows: IssueWithLabels[],
+  issueRows: IssueWithRelations[],
   runMap: Map<string, IssueActiveRunRow>,
-): IssueWithLabelsAndRun[] {
+): IssueWithRelationsAndRun[] {
   return issueRows.map((row) => ({
     ...row,
     activeRun: row.executionRunId ? (runMap.get(row.executionRunId) ?? null) : null,
@@ -554,8 +669,9 @@ export function issueService(db: Db) {
         .where(and(...conditions))
         .orderBy(hasSearch ? asc(searchOrder) : asc(priorityOrder), asc(priorityOrder), desc(issues.updatedAt));
       const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
+      const withRelations = await withIssueRelations(db, withLabels);
+      const runMap = await activeRunMapForIssues(db, withRelations);
+      const withRuns = withActiveRuns(withRelations, runMap);
       if (!contextUserId || withRuns.length === 0) {
         return withRuns;
       }
@@ -660,7 +776,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
+      const [enriched] = await withIssueRelations(db, await withIssueLabels(db, [row]));
       return enriched;
     },
 
@@ -671,7 +787,7 @@ export function issueService(db: Db) {
         .where(eq(issues.identifier, identifier.toUpperCase()))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      const [enriched] = await withIssueLabels(db, [row]);
+      const [enriched] = await withIssueRelations(db, await withIssueLabels(db, [row]));
       return enriched;
     },
 
@@ -778,7 +894,7 @@ export function issueService(db: Db) {
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
-        const [enriched] = await withIssueLabels(tx, [issue]);
+        const [enriched] = await withIssueRelations(tx, await withIssueLabels(tx, [issue]));
         return enriched;
       });
     },
@@ -873,7 +989,7 @@ export function issueService(db: Db) {
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
-        const [enriched] = await withIssueLabels(tx, [updated]);
+        const [enriched] = await withIssueRelations(tx, await withIssueLabels(tx, [updated]));
         return enriched;
       });
     },
@@ -908,7 +1024,7 @@ export function issueService(db: Db) {
         }
 
         if (!removedIssue) return null;
-        const [enriched] = await withIssueLabels(tx, [removedIssue]);
+        const [enriched] = await withIssueRelations(tx, await withIssueLabels(tx, [removedIssue]));
         return enriched;
       }),
 
@@ -954,7 +1070,7 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (updated) {
-        const [enriched] = await withIssueLabels(db, [updated]);
+        const [enriched] = await withIssueRelations(db, await withIssueLabels(db, [updated]));
         return enriched;
       }
 
@@ -997,7 +1113,10 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        if (adopted) {
+          const [enriched] = await withIssueRelations(db, await withIssueLabels(db, [adopted]));
+          return enriched;
+        }
       }
 
       if (
@@ -1015,7 +1134,7 @@ export function issueService(db: Db) {
         });
         if (adopted) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
-          const [enriched] = await withIssueLabels(db, [row]);
+          const [enriched] = await withIssueRelations(db, await withIssueLabels(db, [row]));
           return enriched;
         }
       }
@@ -1027,7 +1146,7 @@ export function issueService(db: Db) {
         sameRunLock(current.checkoutRunId, checkoutRunId)
       ) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0]!);
-        const [enriched] = await withIssueLabels(db, [row]);
+        const [enriched] = await withIssueRelations(db, await withIssueLabels(db, [row]));
         return enriched;
       }
 
@@ -1132,7 +1251,7 @@ export function issueService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!updated) return null;
-      const [enriched] = await withIssueLabels(db, [updated]);
+      const [enriched] = await withIssueRelations(db, await withIssueLabels(db, [updated]));
       return enriched;
     },
 
