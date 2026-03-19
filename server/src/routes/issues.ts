@@ -36,8 +36,8 @@ import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
-const ORCHESTRATION_ISSUE_STATUSES = new Set(["rework", "merging"]);
 const AGENT_SELF_UNASSIGNABLE_STATUSES = new Set(["testing", "rework"]);
+const AGENT_ROUTABLE_STATUSES = new Set(["todo", "testing", "rework", "merging"]);
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -112,6 +112,78 @@ export function issueRoutes(db: Db, storage: StorageService) {
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
+  }
+
+  async function maybeAutoRouteIssue(issue: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!issue) return { issue: null, autoRouted: null };
+    if (issue.hiddenAt) return { issue, autoRouted: null };
+    if (issue.assigneeAgentId || issue.assigneeUserId) return { issue, autoRouted: null };
+
+    if (issue.status === "in_review") {
+      const reviewOwnerUserId = issue.reviewOwnerUserId ?? issue.createdByUserId ?? null;
+      if (!reviewOwnerUserId) return { issue, autoRouted: null };
+      const routedIssue = await svc.update(issue.id, {
+        assigneeAgentId: null,
+        assigneeUserId: reviewOwnerUserId,
+      });
+      return {
+        issue: routedIssue,
+        autoRouted: routedIssue
+          ? {
+              routeType: "user" as const,
+              status: routedIssue.status,
+              assigneeAgentId: null,
+              assigneeUserId: reviewOwnerUserId,
+              reason: "review_owner",
+            }
+          : null,
+      };
+    }
+
+    if (!AGENT_ROUTABLE_STATUSES.has(issue.status)) {
+      return { issue, autoRouted: null };
+    }
+
+    const selection =
+      issue.status === "todo"
+        ? await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+            roles: ["engineer", "devops"],
+          })
+        : issue.status === "testing"
+          ? await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+              roles: ["qa"],
+              preferredAgentId: issue.lastQaAgentId,
+            })
+          : issue.status === "rework"
+            ? await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+                roles: ["engineer", "devops"],
+                preferredAgentId: issue.lastEngineerAgentId,
+              })
+            : await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+                roles: ["devops", "engineer"],
+                preferredAgentId: issue.lastEngineerAgentId,
+              });
+
+    const fallbackCeo = selection ? null : await agentsSvc.getCompanyCeo(issue.companyId);
+    const targetAgentId = selection?.id ?? fallbackCeo?.id ?? null;
+    if (!targetAgentId) return { issue, autoRouted: null };
+
+    const routedIssue = await svc.update(issue.id, {
+      assigneeAgentId: targetAgentId,
+      assigneeUserId: null,
+    });
+    return {
+      issue: routedIssue,
+      autoRouted: routedIssue
+        ? {
+            routeType: "agent" as const,
+            status: routedIssue.status,
+            assigneeAgentId: targetAgentId,
+            assigneeUserId: null,
+            reason: selection ? "deterministic_role_router" : "ceo_fallback",
+          }
+        : null,
+    };
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -761,11 +833,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
-    const issue = await svc.create(companyId, {
+    let issue = await svc.create(companyId, {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
     });
+    const routingResult = await maybeAutoRouteIssue(issue);
+    issue = routingResult.issue ?? issue;
 
     await logActivity(db, {
       companyId,
@@ -778,6 +852,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
       entityId: issue.id,
       details: { title: issue.title, identifier: issue.identifier },
     });
+
+    if (routingResult.autoRouted) {
+      await logActivity(db, {
+        companyId,
+        actorType: "system",
+        actorId: "workflow_router",
+        agentId: null,
+        runId: null,
+        action: "issue.auto_routed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          status: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          reason: routingResult.autoRouted.reason,
+        },
+      });
+    }
 
     if (issue.assigneeAgentId && issue.status !== "backlog") {
       void heartbeat
@@ -807,25 +900,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
     const updateFields: Partial<Parameters<typeof svc.update>[1]> = { ...rawUpdateFields };
     const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : null;
-    const entersOrchestrationStatus =
-      requestedStatus !== null &&
-      existing.status !== requestedStatus &&
-      ORCHESTRATION_ISSUE_STATUSES.has(requestedStatus);
-    let orchestrationCeoId: string | null = null;
-
-    if (
-      req.actor.type === "board" &&
-      entersOrchestrationStatus &&
-      rawUpdateFields.assigneeAgentId === undefined &&
-      rawUpdateFields.assigneeUserId === undefined
-    ) {
-      const companyCeo = await agentsSvc.getCompanyCeo(existing.companyId);
-      if (companyCeo) {
-        orchestrationCeoId = companyCeo.id;
-        updateFields.assigneeAgentId = companyCeo.id;
-        updateFields.assigneeUserId = null;
-      }
-    }
 
     const assigneeWillChange =
       (updateFields.assigneeAgentId !== undefined && updateFields.assigneeAgentId !== existing.assigneeAgentId) ||
@@ -889,6 +963,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    const routingResult =
+      requestedStatus !== null
+        ? await maybeAutoRouteIssue(issue)
+        : { issue, autoRouted: null };
+    issue = routingResult.issue ?? issue;
 
     // Build activity details with previous values for changed fields
     const previous: Record<string, unknown> = {};
@@ -944,7 +1023,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     }
 
-    const assigneeChanged = assigneeWillChange;
+    if (routingResult.autoRouted) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "workflow_router",
+        agentId: null,
+        runId: null,
+        action: "issue.auto_routed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          status: issue.status,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          reason: routingResult.autoRouted.reason,
+        },
+      });
+    }
+
+    const assigneeChanged =
+      issue.assigneeAgentId !== existing.assigneeAgentId ||
+      issue.assigneeUserId !== existing.assigneeUserId;
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
@@ -953,16 +1053,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       requestedStatus !== null &&
       existing.status !== issue.status &&
       (issue.status === "done" || issue.status === "cancelled");
-    const statusChangedToOrchestration =
-      requestedStatus !== null &&
-      existing.status !== issue.status &&
-      ORCHESTRATION_ISSUE_STATUSES.has(issue.status);
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
-      const companyCeoId = orchestrationCeoId
-        ?? (statusChangedToOrchestration ? (await agentsSvc.getCompanyCeo(issue.companyId))?.id ?? null : null);
 
       if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
         wakeups.set(issue.assigneeAgentId, {
@@ -985,34 +1079,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
-        });
-      }
-
-      if (
-        statusChangedToOrchestration &&
-        companyCeoId &&
-        issue.assigneeAgentId === companyCeoId &&
-        !wakeups.has(companyCeoId)
-      ) {
-        wakeups.set(companyCeoId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_status_changed",
-          payload: {
-            issueId: issue.id,
-            mutation: "update",
-            status: issue.status,
-            previousStatus: existing.status,
-            orchestrationStatus: true,
-          },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            source: "issue.orchestration_status_change",
-            wakeReason: "issue_status_changed",
-            orchestrationStatus: issue.status,
-          },
         });
       }
 
@@ -1307,9 +1373,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
+      const routingResult = await maybeAutoRouteIssue(reopenedIssue);
       reopened = true;
       reopenFromStatus = issue.status;
-      currentIssue = reopenedIssue;
+      currentIssue = routingResult.issue ?? reopenedIssue;
 
       await logActivity(db, {
         companyId: currentIssue.companyId,
@@ -1328,6 +1395,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
           identifier: currentIssue.identifier,
         },
       });
+
+      if (routingResult.autoRouted) {
+        await logActivity(db, {
+          companyId: currentIssue.companyId,
+          actorType: "system",
+          actorId: "workflow_router",
+          agentId: null,
+          runId: null,
+          action: "issue.auto_routed",
+          entityType: "issue",
+          entityId: currentIssue.id,
+          details: {
+            status: currentIssue.status,
+            assigneeAgentId: currentIssue.assigneeAgentId,
+            assigneeUserId: currentIssue.assigneeUserId,
+            reason: routingResult.autoRouted.reason,
+          },
+        });
+      }
     }
 
     if (interruptRequested) {

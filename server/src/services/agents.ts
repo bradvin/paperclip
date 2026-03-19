@@ -11,11 +11,13 @@ import {
   costEvents,
   heartbeatRunEvents,
   heartbeatRuns,
+  issues,
 } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { isAssignableAgentStatus } from "./issue-workflow.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -377,6 +379,71 @@ export function agentService(db: Db) {
       const rows = await db.select().from(agents).where(and(...conditions));
       const hydrated = await hydrateAgentSpend(rows);
       return hydrated.map(normalizeAgentRow);
+    },
+
+    selectDeterministicAssignee: async (
+      companyId: string,
+      input: { roles: string[]; preferredAgentId?: string | null },
+    ) => {
+      const roleOrder = Array.from(new Set(input.roles.map((role) => role.trim()).filter(Boolean)));
+      if (roleOrder.length === 0) return null;
+
+      const rows = await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), inArray(agents.role, roleOrder)));
+      const candidates = rows
+        .filter((row) => isAssignableAgentStatus(row.status))
+        .map(normalizeAgentRow);
+      if (candidates.length === 0) return null;
+
+      if (input.preferredAgentId) {
+        const preferred = candidates.find((candidate) => candidate.id === input.preferredAgentId);
+        if (preferred) return preferred;
+      }
+
+      const workloadRows = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(
+              issues.assigneeAgentId,
+              candidates.map((candidate) => candidate.id),
+            ),
+            ne(issues.status, "done"),
+            ne(issues.status, "cancelled"),
+            sql`${issues.hiddenAt} is null`,
+          ),
+        );
+
+      const loadByAgentId = new Map<string, number>();
+      for (const row of workloadRows) {
+        if (!row.assigneeAgentId) continue;
+        loadByAgentId.set(row.assigneeAgentId, (loadByAgentId.get(row.assigneeAgentId) ?? 0) + 1);
+      }
+
+      const sorted = [...candidates].sort((left, right) => {
+        const leftLoad = loadByAgentId.get(left.id) ?? 0;
+        const rightLoad = loadByAgentId.get(right.id) ?? 0;
+        if (leftLoad !== rightLoad) return leftLoad - rightLoad;
+
+        const leftRoleOrder = roleOrder.indexOf(left.role);
+        const rightRoleOrder = roleOrder.indexOf(right.role);
+        if (leftRoleOrder !== rightRoleOrder) return leftRoleOrder - rightRoleOrder;
+
+        const leftHeartbeat = left.lastHeartbeatAt ? new Date(left.lastHeartbeatAt).getTime() : 0;
+        const rightHeartbeat = right.lastHeartbeatAt ? new Date(right.lastHeartbeatAt).getTime() : 0;
+        if (leftHeartbeat !== rightHeartbeat) return rightHeartbeat - leftHeartbeat;
+
+        return left.id.localeCompare(right.id);
+      });
+
+      return sorted[0] ?? null;
     },
 
     getById,

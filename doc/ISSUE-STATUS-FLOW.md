@@ -1,6 +1,6 @@
 # Issue Status Flow
 
-This document explains how Paperclip issue statuses work in the runtime today, including the dev-to-QA loop, CEO orchestration for unassigned work, the human review loop, and how PR work products fit into the flow.
+This document explains how Paperclip issue statuses work in the runtime today, including the dev-to-QA loop, deterministic control-plane routing, the human review loop, and how PR work products fit into the flow.
 
 ## Status Set
 
@@ -48,7 +48,7 @@ Queued or review statuses such as `todo`, `testing`, `in_review`, `rework`, and 
 
 - Waiting on QA verification.
 - Used when implementation is complete but QA review has not happened yet.
-- Can be left unassigned so the CEO can route it to QA on a later wake.
+- Can be left unassigned so Paperclip can route it deterministically to QA.
 - Checkout moves it to `in_progress`.
 
 ### `in_review`
@@ -114,7 +114,7 @@ After a dev agent finishes implementation, the expected flow is:
 
 1. Dev agent completes coding work.
 2. Dev moves the issue to `testing` and clears the assignment.
-3. CEO routes the unassigned testing issue to a QA agent.
+3. Paperclip routes the unassigned testing issue to a QA agent.
 4. QA reviews it.
 5. If QA passes, the issue moves to `in_review`.
 6. Human reviewer decides what happens next.
@@ -131,7 +131,7 @@ The QA reviewer has two main outcomes:
 
 - Add a comment describing the requested changes.
 - Set the issue to `rework`.
-- Clear the assignment so the CEO can route it back to dev.
+- Clear the assignment so Paperclip can route it back to dev.
 
 After QA passes, the human reviewer has three main outcomes:
 
@@ -149,35 +149,28 @@ After QA passes, the human reviewer has three main outcomes:
 - Add a comment describing the remaining merge or integration work.
 - Set the issue to `merging`.
 
-## CEO Orchestration
+## Deterministic Routing
 
-Paperclip now supports a simple CEO-driven orchestration model.
+Paperclip now handles the routine workflow handoffs in the control plane instead of relying on CEO heartbeats.
 
 The intended flow is:
 
-1. CEO wakes and scans for unassigned `todo` issues.
-2. CEO assigns those to dev agents.
-3. Devs finish implementation and move issues to `testing`, clearing their own assignment.
-4. CEO wakes and scans for unassigned `testing` issues.
-5. CEO assigns those to QA agents.
-6. QA either:
-   - moves the issue to `in_review`
-   - or moves the issue to `rework`, clearing the assignment
-7. CEO wakes again and routes unassigned `rework` issues back to dev agents.
+1. Unassigned `todo` work is assigned server-side to an engineer/devops agent.
+2. Dev finishes implementation and moves the issue to `testing`, clearing the assignment.
+3. Paperclip assigns the unassigned `testing` issue server-side to QA.
+4. QA reviews it.
+5. If QA passes, the issue moves to `in_review`.
+6. Paperclip assigns `in_review` server-side to the review owner or issue creator user.
+7. If QA requests changes, QA moves the issue to `rework`, clearing the assignment.
+8. Paperclip assigns the unassigned `rework` issue server-side back to an engineer/devops agent.
 
-Paperclip also retains the board-driven orchestration shortcut: when a board user moves an issue into `rework` or `merging` without explicitly assigning it, Paperclip automatically assigns it to the company CEO and wakes that CEO.
+`merging` is also server-routed:
 
-Typical CEO actions:
+- first preference: devops or the previously working engineer
+- fallback: another engineer
+- final fallback: CEO if no eligible implementation agent exists
 
-- reassign `rework` to the original engineer
-- reassign `rework` to a different engineer if needed
-- assign unassigned `todo` to engineers
-- assign unassigned `testing` to QA
-- reassign `merging` to an integration-capable engineer or lead
-- create follow-up issues if the work should split
-- keep the issue if the CEO wants to coordinate more directly first
-
-If the issue is already assigned to the CEO when it enters `rework` or `merging`, Paperclip still wakes the CEO on the status change so the review outcome is not silent.
+The CEO still matters for exceptions, but no longer needs to spend routine heartbeats scanning for normal unassigned queue work.
 
 ## Agent Behavior For `testing`, `rework`, And `merging`
 
@@ -191,6 +184,8 @@ This keeps execution semantics simple:
 
 - queued state says what kind of work it is
 - `in_progress` says the work is actively running
+
+If a checked-out issue is released, Paperclip restores the remembered queued status that existed before checkout instead of flattening everything back to `todo`.
 
 ## Dependency Behavior
 
@@ -230,22 +225,16 @@ The PR work product answers:
 - what is happening in GitHub
 - what review or merge state the code is in
 
-## Important Implementation Detail
-
-If an issue is explicitly released from checkout, Paperclip currently returns it to `todo`.
-
-That means a released `testing`, `rework`, or `merging` issue does not automatically restore its previous queue label. If preserving the pre-checkout queue status becomes important later, that would require an additional runtime change.
-
 ## Recommended Operational Use
 
 Use statuses this way:
 
 - `todo`: ordinary queued implementation work
 - `in_progress`: active agent execution
-- `testing`: waiting on QA, usually routed by the CEO
+- `testing`: waiting on QA, usually routed by the control plane
 - `in_review`: waiting on human decision
-- `rework`: human requested code changes, CEO should route it
-- `merging`: human approved direction, integration still remains, CEO should route it
+- `rework`: human or QA requested code changes, usually routed by the control plane
+- `merging`: human approved direction, integration still remains, usually routed by the control plane
 - `blocked`: cannot proceed because something else must unblock it
 - `done`: fully complete
 - `cancelled`: closed without completion

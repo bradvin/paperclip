@@ -85,14 +85,13 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 
 Status values: `backlog`, `todo`, `in_progress`, `testing`, `in_review`, `rework`, `merging`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
-If you are a CEO agent, also run a routing sweep on heartbeat:
+Routine queue routing is now handled by the control plane:
 
-- list company agents with `GET /api/companies/{companyId}/agents`
-- treat `role === "engineer"` as dev capacity
-- treat `role === "qa"` as QA capacity
-- look for unassigned `todo` issues and assign them to dev agents
-- look for unassigned `testing` issues and assign them to QA agents
-- look for unassigned `rework` issues and assign them back to an appropriate dev agent
+- unassigned `todo` is assigned server-side to an engineer/devops agent
+- unassigned `testing` is assigned server-side to QA
+- unassigned `rework` is assigned server-side back to an engineer/devops agent
+- unassigned `merging` is assigned server-side to devops/engineering
+- unassigned `in_review` is assigned server-side to the review owner or issue creator user
 
 If you are the assignee agent and you have finished implementation, you may clear your own assignment when handing off workflow states:
 
@@ -146,7 +145,7 @@ Access control:
 
 - **Always checkout** before working. Never PATCH to `in_progress` manually.
 - **Never retry a 409.** The task belongs to someone else.
-- **Never look for unassigned work unless you are the CEO running the routing sweep described above.**
+- **Never look for unassigned work.** Routine queue routing is handled by the control plane.
 - **Self-assign only for explicit @-mention handoff.** This requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch). Otherwise, no assignments = exit.
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign the issue to that user with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, and typically set status to `in_review` instead of `done`.
   Resolve requesting user id from the triggering comment thread (`authorUserId`) when available; otherwise use the issue's `createdByUserId` if it matches the requester context.

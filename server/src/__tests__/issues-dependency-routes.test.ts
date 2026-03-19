@@ -14,6 +14,7 @@ const mockIssueService = vi.hoisted(() => ({
   getComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   list: vi.fn(),
+  create: vi.fn(),
   checkout: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -56,6 +57,7 @@ const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   getChainOfCommand: vi.fn(),
   getCompanyCeo: vi.fn(),
+  selectDeterministicAssignee: vi.fn(),
 }));
 
 const mockApprovalService = vi.hoisted(() => ({
@@ -167,6 +169,7 @@ describe("issue dependency route behavior", () => {
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getCommentCursor.mockResolvedValue(null);
     mockIssueService.getComment.mockResolvedValue(null);
+    mockIssueService.create.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({
       id: "issue-1",
       status: "in_progress",
@@ -187,6 +190,7 @@ describe("issue dependency route behavior", () => {
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.getCompanyCeo.mockResolvedValue(null);
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue(null);
   });
 
   it("returns blocks and blockedBy in heartbeat context", async () => {
@@ -368,7 +372,7 @@ describe("issue dependency route behavior", () => {
     });
   });
 
-  it("assigns orchestration statuses to the CEO when a board reviewer requests rework", async () => {
+  it("auto-routes board-requested rework to an engineer", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-5",
       companyId: "company-1",
@@ -376,38 +380,67 @@ describe("issue dependency route behavior", () => {
       assigneeAgentId: null,
       assigneeUserId: "user-1",
       createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-2",
+      lastQaAgentId: "qa-1",
+      hiddenAt: null,
     });
-    mockAgentService.getCompanyCeo.mockResolvedValue({
-      id: "00000000-0000-4000-8000-0000000000ce",
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue({
+      id: "eng-2",
       companyId: "company-1",
-      role: "ceo",
+      role: "engineer",
     });
-    mockIssueService.update.mockResolvedValue({
-      id: "issue-5",
-      companyId: "company-1",
-      identifier: "PAP-5",
-      title: "Needs another pass",
-      status: "rework",
-      assigneeAgentId: "00000000-0000-4000-8000-0000000000ce",
-      assigneeUserId: null,
-    });
+    mockIssueService.update
+      .mockResolvedValueOnce({
+        id: "issue-5",
+        companyId: "company-1",
+        identifier: "PAP-5",
+        title: "Needs another pass",
+        status: "rework",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        reviewOwnerUserId: "user-1",
+        createdByUserId: "user-1",
+        lastEngineerAgentId: "eng-2",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: "issue-5",
+        companyId: "company-1",
+        identifier: "PAP-5",
+        title: "Needs another pass",
+        status: "rework",
+        assigneeAgentId: "eng-2",
+        assigneeUserId: null,
+        reviewOwnerUserId: "user-1",
+        createdByUserId: "user-1",
+        lastEngineerAgentId: "eng-2",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      });
 
     const res = await request(createIssueApp())
       .patch("/api/issues/issue-5")
       .send({ status: "rework", comment: "Please address the review feedback." });
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
+    expect(mockIssueService.update).toHaveBeenNthCalledWith(1, "issue-5", { status: "rework" });
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenCalledWith("company-1", {
+      roles: ["engineer", "devops"],
+      preferredAgentId: "eng-2",
+    });
+    expect(mockIssueService.update).toHaveBeenNthCalledWith(
+      2,
       "issue-5",
       expect.objectContaining({
-        status: "rework",
-        assigneeAgentId: "00000000-0000-4000-8000-0000000000ce",
+        assigneeAgentId: "eng-2",
         assigneeUserId: null,
       }),
     );
     await vi.waitFor(() => {
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-        "00000000-0000-4000-8000-0000000000ce",
+        "eng-2",
         expect.objectContaining({
           reason: "issue_assigned",
           payload: expect.objectContaining({ issueId: "issue-5" }),
@@ -533,6 +566,205 @@ describe("issue dependency route behavior", () => {
         status: "in_review",
         assigneeAgentId: null,
         assigneeUserId: "user-1",
+      }),
+    );
+  });
+
+  it("auto-routes new unassigned todo work to an engineer", async () => {
+    mockIssueService.create.mockResolvedValue({
+      id: "issue-9",
+      companyId: "company-1",
+      identifier: "PAP-9",
+      title: "Fresh todo work",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      hiddenAt: null,
+      reviewOwnerUserId: "user-1",
+      createdByUserId: "user-1",
+      lastEngineerAgentId: null,
+      lastQaAgentId: null,
+    });
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue({
+      id: "eng-1",
+      companyId: "company-1",
+      role: "engineer",
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-9",
+      companyId: "company-1",
+      identifier: "PAP-9",
+      title: "Fresh todo work",
+      status: "todo",
+      assigneeAgentId: "eng-1",
+      assigneeUserId: null,
+      hiddenAt: null,
+      reviewOwnerUserId: "user-1",
+      createdByUserId: "user-1",
+      lastEngineerAgentId: null,
+      lastQaAgentId: null,
+    });
+
+    const res = await request(createIssueApp()).post("/api/companies/company-1/issues").send({
+      title: "Fresh todo work",
+      status: "todo",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenCalledWith("company-1", {
+      roles: ["engineer", "devops"],
+    });
+    expect(mockIssueService.update).toHaveBeenCalledWith("issue-9", {
+      assigneeAgentId: "eng-1",
+      assigneeUserId: null,
+    });
+    expect(res.body.assigneeAgentId).toBe("eng-1");
+  });
+
+  it("auto-routes completed dev work in testing to QA", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-10",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-1",
+      hiddenAt: null,
+    });
+    mockIssueService.update
+      .mockResolvedValueOnce({
+        id: "issue-10",
+        companyId: "company-1",
+        identifier: "PAP-10",
+        title: "Ready for QA",
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-1",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: "issue-10",
+        companyId: "company-1",
+        identifier: "PAP-10",
+        title: "Ready for QA",
+        status: "testing",
+        assigneeAgentId: "qa-1",
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-1",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      });
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue({
+      id: "qa-1",
+      companyId: "company-1",
+      role: "qa",
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-10")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        comment: "Implementation complete. Ready for QA.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenCalledWith("company-1", {
+      roles: ["qa"],
+      preferredAgentId: "qa-1",
+    });
+    expect(mockIssueService.update).toHaveBeenNthCalledWith(
+      2,
+      "issue-10",
+      expect.objectContaining({
+        assigneeAgentId: "qa-1",
+        assigneeUserId: null,
+      }),
+    );
+    expect(res.body.assigneeAgentId).toBe("qa-1");
+  });
+
+  it("auto-routes reopened closed work back to an engineer", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-11",
+      companyId: "company-1",
+      status: "done",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-2",
+      lastQaAgentId: "qa-1",
+      executionRunId: null,
+      hiddenAt: null,
+      identifier: "PAP-11",
+      title: "Reopen me",
+    });
+    mockIssueService.update
+      .mockResolvedValueOnce({
+        id: "issue-11",
+        companyId: "company-1",
+        identifier: "PAP-11",
+        title: "Reopen me",
+        status: "todo",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-2",
+        lastQaAgentId: "qa-1",
+        executionRunId: null,
+        hiddenAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: "issue-11",
+        companyId: "company-1",
+        identifier: "PAP-11",
+        title: "Reopen me",
+        status: "todo",
+        assigneeAgentId: "eng-2",
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-2",
+        lastQaAgentId: "qa-1",
+        executionRunId: null,
+        hiddenAt: null,
+      });
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue({
+      id: "eng-2",
+      companyId: "company-1",
+      role: "engineer",
+    });
+
+    const res = await request(createIssueApp())
+      .post("/api/issues/issue-11/comments")
+      .send({
+        body: "Please pick this back up.",
+        reopen: true,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenCalledWith("company-1", {
+      roles: ["engineer", "devops"],
+    });
+    expect(mockIssueService.update).toHaveBeenNthCalledWith(
+      2,
+      "issue-11",
+      expect.objectContaining({
+        assigneeAgentId: "eng-2",
+        assigneeUserId: null,
       }),
     );
   });
