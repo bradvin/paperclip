@@ -336,6 +336,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push("--tools", "read,bash,edit,write,grep,find,ls");
     args.push("--session", sessionFile);
     
+    // Add Paperclip skills directory so Pi can load the paperclip skill
+    const piSkillsHome = path.join(os.homedir(), ".pi", "agent", "skills");
+    args.push("--skill", piSkillsHome);
+    
     if (extraArgs.length > 0) args.push(...extraArgs);
     
     return args;
