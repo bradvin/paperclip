@@ -36,6 +36,7 @@ import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const ORCHESTRATION_ISSUE_STATUSES = new Set(["rework", "merging"]);
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -802,18 +803,41 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
+    const updateFields: Partial<Parameters<typeof svc.update>[1]> = { ...rawUpdateFields };
+    const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : null;
+    const entersOrchestrationStatus =
+      requestedStatus !== null &&
+      existing.status !== requestedStatus &&
+      ORCHESTRATION_ISSUE_STATUSES.has(requestedStatus);
+    let orchestrationCeoId: string | null = null;
+
+    if (
+      req.actor.type === "board" &&
+      entersOrchestrationStatus &&
+      rawUpdateFields.assigneeAgentId === undefined &&
+      rawUpdateFields.assigneeUserId === undefined
+    ) {
+      const companyCeo = await agentsSvc.getCompanyCeo(existing.companyId);
+      if (companyCeo) {
+        orchestrationCeoId = companyCeo.id;
+        updateFields.assigneeAgentId = companyCeo.id;
+        updateFields.assigneeUserId = null;
+      }
+    }
+
     const assigneeWillChange =
-      (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
-      (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
+      (updateFields.assigneeAgentId !== undefined && updateFields.assigneeAgentId !== existing.assigneeAgentId) ||
+      (updateFields.assigneeUserId !== undefined && updateFields.assigneeUserId !== existing.assigneeUserId);
 
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
       !!req.actor.agentId &&
       existing.assigneeAgentId === req.actor.agentId &&
-      req.body.assigneeAgentId === null &&
-      typeof req.body.assigneeUserId === "string" &&
+      updateFields.assigneeAgentId === null &&
+      typeof updateFields.assigneeUserId === "string" &&
       !!existing.createdByUserId &&
-      req.body.assigneeUserId === existing.createdByUserId;
+      updateFields.assigneeUserId === existing.createdByUserId;
 
     if (assigneeWillChange) {
       if (!isAgentReturningIssueToCreator) {
@@ -822,7 +846,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
@@ -837,9 +860,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
             companyId: existing.companyId,
             assigneePatch: {
               assigneeAgentId:
-                req.body.assigneeAgentId === undefined ? "__omitted__" : req.body.assigneeAgentId,
+                updateFields.assigneeAgentId === undefined ? "__omitted__" : updateFields.assigneeAgentId,
               assigneeUserId:
-                req.body.assigneeUserId === undefined ? "__omitted__" : req.body.assigneeUserId,
+                updateFields.assigneeUserId === undefined ? "__omitted__" : updateFields.assigneeUserId,
             },
             currentAssignee: {
               assigneeAgentId: existing.assigneeAgentId,
@@ -916,15 +939,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const statusChangedFromBacklog =
       existing.status === "backlog" &&
       issue.status !== "backlog" &&
-      req.body.status !== undefined;
+      requestedStatus !== null;
     const statusChangedToResolved =
-      req.body.status !== undefined &&
+      requestedStatus !== null &&
       existing.status !== issue.status &&
       (issue.status === "done" || issue.status === "cancelled");
+    const statusChangedToOrchestration =
+      requestedStatus !== null &&
+      existing.status !== issue.status &&
+      ORCHESTRATION_ISSUE_STATUSES.has(issue.status);
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+      const companyCeoId = orchestrationCeoId
+        ?? (statusChangedToOrchestration ? (await agentsSvc.getCompanyCeo(issue.companyId))?.id ?? null : null);
 
       if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog") {
         wakeups.set(issue.assigneeAgentId, {
@@ -947,6 +976,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
           contextSnapshot: { issueId: issue.id, source: "issue.status_change" },
+        });
+      }
+
+      if (
+        statusChangedToOrchestration &&
+        companyCeoId &&
+        issue.assigneeAgentId === companyCeoId &&
+        !wakeups.has(companyCeoId)
+      ) {
+        wakeups.set(companyCeoId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          payload: {
+            issueId: issue.id,
+            mutation: "update",
+            status: issue.status,
+            previousStatus: existing.status,
+            orchestrationStatus: true,
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            source: "issue.orchestration_status_change",
+            wakeReason: "issue_status_changed",
+            orchestrationStatus: issue.status,
+          },
         });
       }
 

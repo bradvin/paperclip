@@ -161,6 +161,8 @@ const statusColors: Record<string, string> = {
   todo: "#3b82f6",
   in_progress: "#8b5cf6",
   in_review: "#a855f7",
+  rework: "#f97316",
+  merging: "#14b8a6",
   done: "#10b981",
   blocked: "#ef4444",
   cancelled: "#6b7280",
@@ -171,6 +173,8 @@ const statusLabels: Record<string, string> = {
   todo: "To Do",
   in_progress: "In Progress",
   in_review: "In Review",
+  rework: "Rework",
+  merging: "Merging",
   done: "Done",
   blocked: "Blocked",
   cancelled: "Cancelled",
@@ -190,7 +194,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
     allStatuses.add(issue.status);
   }
 
-  const statusOrder = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
+  const statusOrder = ["todo", "in_progress", "in_review", "rework", "merging", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 

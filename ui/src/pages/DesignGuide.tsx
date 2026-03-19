@@ -398,7 +398,7 @@ export function DesignGuide() {
             {[
               "active", "running", "paused", "idle", "archived", "planned",
               "achieved", "completed", "failed", "timed_out", "succeeded", "error",
-              "pending_approval", "backlog", "todo", "in_progress", "in_review", "blocked",
+              "pending_approval", "backlog", "todo", "in_progress", "in_review", "rework", "merging", "blocked",
               "done", "terminated", "cancelled", "pending", "revision_requested",
               "approved", "rejected",
             ].map((s) => (
@@ -409,7 +409,7 @@ export function DesignGuide() {
 
         <SubSection title="StatusIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
-            {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
+            {["backlog", "todo", "in_progress", "in_review", "rework", "merging", "done", "cancelled", "blocked"].map(
               (s) => (
                 <div key={s} className="flex items-center gap-1.5">
                   <StatusIcon status={s} />
@@ -550,6 +550,8 @@ export function DesignGuide() {
                 <SelectItem value="todo">Todo</SelectItem>
                 <SelectItem value="in_progress">In Progress</SelectItem>
                 <SelectItem value="in_review">In Review</SelectItem>
+                <SelectItem value="rework">Rework</SelectItem>
+                <SelectItem value="merging">Merging</SelectItem>
                 <SelectItem value="done">Done</SelectItem>
               </SelectContent>
             </Select>

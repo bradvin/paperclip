@@ -652,6 +652,15 @@ export function agentService(db: Db) {
       return chain;
     },
 
+    getCompanyCeo: async (companyId: string) => {
+      const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+      const normalizedRows = (await hydrateAgentSpend(rows)).map(normalizeAgentRow);
+      const ceoCandidates = normalizedRows.filter((row) => row.role === "ceo" && row.status !== "terminated");
+      if (ceoCandidates.length === 0) return null;
+      const rootCeo = ceoCandidates.find((row) => row.reportsTo === null);
+      return rootCeo ?? ceoCandidates[0] ?? null;
+    },
+
     runningForAgent: (agentId: string) =>
       db
         .select()

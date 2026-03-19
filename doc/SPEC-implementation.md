@@ -194,7 +194,7 @@ Invariant: at least one root `company` level goal per company.
 - `parent_id` uuid fk `issues.id` null
 - `title` text not null
 - `description` text null
-- `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- `status` enum: `backlog | todo | in_progress | in_review | rework | merging | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
 - `assignee_agent_id` uuid fk `agents.id` null
 - `created_by_agent_id` uuid fk `agents.id` null
@@ -398,8 +398,10 @@ Allowed transitions:
 - `backlog -> todo | cancelled`
 - `todo -> in_progress | blocked | cancelled`
 - `in_progress -> in_review | blocked | done | cancelled`
-- `in_review -> in_progress | done | cancelled`
-- `blocked -> todo | in_progress | cancelled`
+- `in_review -> rework | merging | done | cancelled`
+- `rework -> in_progress | blocked | cancelled`
+- `merging -> in_progress | blocked | done | cancelled`
+- `blocked -> todo | rework | merging | in_progress | cancelled`
 - terminal: `done`, `cancelled`
 
 Side effects:
@@ -508,7 +510,7 @@ All endpoints are under `/api` and return JSON.
 ```json
 {
   "agentId": "uuid",
-  "expectedStatuses": ["todo", "backlog", "blocked"]
+  "expectedStatuses": ["todo", "backlog", "rework", "merging", "blocked"]
 }
 ```
 

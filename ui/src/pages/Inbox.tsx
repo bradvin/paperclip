@@ -413,7 +413,7 @@ export function Inbox() {
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
-        status: "backlog,todo,in_progress,in_review,blocked,done",
+        status: "backlog,todo,in_progress,in_review,rework,merging,blocked,done",
       }),
     enabled: !!selectedCompanyId,
   });

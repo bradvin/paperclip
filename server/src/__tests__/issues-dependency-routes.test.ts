@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   list: vi.fn(),
   checkout: vi.fn(),
   update: vi.fn(),
+  addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   listWakeableDependentsForResolvedBlocker: vi.fn(),
 }));
@@ -53,6 +54,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
   getChainOfCommand: vi.fn(),
+  getCompanyCeo: vi.fn(),
 }));
 
 const mockApprovalService = vi.hoisted(() => ({
@@ -146,6 +148,10 @@ describe("issue dependency route behavior", () => {
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getCommentCursor.mockResolvedValue(null);
     mockIssueService.getComment.mockResolvedValue(null);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      body: "Please address the review feedback.",
+    });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.listWakeableDependentsForResolvedBlocker.mockResolvedValue([]);
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
@@ -154,6 +160,7 @@ describe("issue dependency route behavior", () => {
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
+    mockAgentService.getCompanyCeo.mockResolvedValue(null);
   });
 
   it("returns blocks and blockedBy in heartbeat context", async () => {
@@ -335,6 +342,55 @@ describe("issue dependency route behavior", () => {
     });
   });
 
+  it("assigns orchestration statuses to the CEO when a board reviewer requests rework", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-5",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "user-1",
+      createdByUserId: "user-1",
+    });
+    mockAgentService.getCompanyCeo.mockResolvedValue({
+      id: "00000000-0000-4000-8000-0000000000ce",
+      companyId: "company-1",
+      role: "ceo",
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-5",
+      companyId: "company-1",
+      identifier: "PAP-5",
+      title: "Needs another pass",
+      status: "rework",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000ce",
+      assigneeUserId: null,
+    });
+
+    const res = await request(createIssueApp())
+      .patch("/api/issues/issue-5")
+      .send({ status: "rework", comment: "Please address the review feedback." });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-5",
+      expect.objectContaining({
+        status: "rework",
+        assigneeAgentId: "00000000-0000-4000-8000-0000000000ce",
+        assigneeUserId: null,
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "00000000-0000-4000-8000-0000000000ce",
+        expect.objectContaining({
+          reason: "issue_assigned",
+          payload: expect.objectContaining({ issueId: "issue-5" }),
+          contextSnapshot: expect.objectContaining({ issueId: "issue-5" }),
+        }),
+      );
+    });
+  });
+
   it("returns blocks and blockedBy from agents me inbox-lite", async () => {
     mockIssueService.list.mockResolvedValue([
       {
@@ -376,7 +432,7 @@ describe("issue dependency route behavior", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.list).toHaveBeenCalledWith("company-1", {
       assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
-      status: "todo,in_progress,blocked",
+      status: "todo,in_progress,rework,merging,blocked",
     });
     expect(res.body[0]).toMatchObject({
       id: "issue-1",
