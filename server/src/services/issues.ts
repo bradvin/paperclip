@@ -31,6 +31,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
+import { assertIssueStatusTransition, isAssignableAgentStatus } from "./issue-workflow.js";
 
 const ALL_ISSUE_STATUSES = [
   "backlog",
@@ -45,13 +46,6 @@ const ALL_ISSUE_STATUSES = [
   "cancelled",
 ];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
-
-function assertTransition(from: string, to: string) {
-  if (from === to) return;
-  if (!ALL_ISSUE_STATUSES.includes(to)) {
-    throw conflict(`Unknown issue status: ${to}`);
-  }
-}
 
 function applyStatusSideEffects(
   status: string | undefined,
@@ -661,11 +655,8 @@ export function issueService(db: Db) {
     if (assignee.companyId !== companyId) {
       throw unprocessable("Assignee must belong to same company");
     }
-    if (assignee.status === "pending_approval") {
-      throw conflict("Cannot assign work to pending approval agents");
-    }
-    if (assignee.status === "terminated") {
-      throw conflict("Cannot assign work to terminated agents");
+    if (!isAssignableAgentStatus(assignee.status)) {
+      throw conflict(`Cannot assign work to ${assignee.status} agents`);
     }
   }
 
@@ -1203,7 +1194,10 @@ export function issueService(db: Db) {
       }
 
       if (issueData.status) {
-        assertTransition(existing.status, issueData.status);
+        if (!ALL_ISSUE_STATUSES.includes(issueData.status)) {
+          throw conflict(`Unknown issue status: ${issueData.status}`);
+        }
+        assertIssueStatusTransition(existing.status, issueData.status);
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
