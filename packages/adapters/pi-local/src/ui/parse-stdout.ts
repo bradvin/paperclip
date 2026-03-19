@@ -72,7 +72,17 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
       for (const tr of toolResults) {
         const content = tr.content;
         const isError = tr.isError === true;
-        const contentStr = typeof content === "string" ? content : JSON.stringify(content);
+        
+        // Extract text from Pi's content array format
+        let contentStr: string;
+        if (typeof content === "string") {
+          contentStr = content;
+        } else if (Array.isArray(content)) {
+          contentStr = extractTextContent(content as Array<{ type: string; text?: string }>);
+        } else {
+          contentStr = JSON.stringify(content);
+        }
+        
         entries.push({
           kind: "tool_result",
           ts,
@@ -134,7 +144,21 @@ export function parsePiStdoutLine(line: string, ts: string): TranscriptEntry[] {
     const toolName = asString(parsed.toolName);
     const result = parsed.result;
     const isError = parsed.isError === true;
-    const contentStr = typeof result === "string" ? result : JSON.stringify(result);
+    
+    // Extract text from Pi's content array format: {"content": [{"type": "text", "text": "..."}]}
+    let contentStr: string;
+    if (typeof result === "string") {
+      contentStr = result;
+    } else if (result && typeof result === "object") {
+      const resultObj = result as Record<string, unknown>;
+      if (Array.isArray(resultObj.content)) {
+        contentStr = extractTextContent(resultObj.content as Array<{ type: string; text?: string }>);
+      } else {
+        contentStr = JSON.stringify(result);
+      }
+    } else {
+      contentStr = JSON.stringify(result);
+    }
     
     return [{
       kind: "tool_result",
