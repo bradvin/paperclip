@@ -594,6 +594,24 @@ export interface WorkerToHostMethods {
     },
     result: Issue,
   ];
+  "issues.addRelation": [
+    params: {
+      companyId: string;
+      fromIssueId: string;
+      toIssueId: string;
+      relationType?: "blocks";
+    },
+    result: Issue,
+  ];
+  "issues.removeRelation": [
+    params: {
+      companyId: string;
+      fromIssueId: string;
+      toIssueId: string;
+      relationType?: "blocks";
+    },
+    result: Issue,
+  ];
   "issues.listComments": [
     params: { issueId: string; companyId: string },
     result: IssueComment[],

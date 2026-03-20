@@ -65,6 +65,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   // Data write operations
   "issues.create": ["issues.create"],
   "issues.update": ["issues.update"],
+  "issues.addRelation": ["issues.update"],
+  "issues.removeRelation": ["issues.update"],
   "issue.comments.create": ["issue.comments.create"],
   "activity.log": ["activity.log.write"],
   "metrics.write": ["metrics.write"],

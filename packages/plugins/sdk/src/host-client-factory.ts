@@ -155,12 +155,14 @@ export interface HostServices {
     getWorkspaceForIssue(params: WorkerToHostMethods["projects.getWorkspaceForIssue"][0]): Promise<WorkerToHostMethods["projects.getWorkspaceForIssue"][1]>;
   };
 
-  /** Provides `issues.list`, `issues.get`, `issues.create`, `issues.update`, `issues.listComments`, `issues.createComment`. */
+  /** Provides `issues.list`, `issues.get`, `issues.create`, `issues.update`, relation mutations, `issues.listComments`, `issues.createComment`. */
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
     create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
     update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
+    addRelation(params: WorkerToHostMethods["issues.addRelation"][0]): Promise<WorkerToHostMethods["issues.addRelation"][1]>;
+    removeRelation(params: WorkerToHostMethods["issues.removeRelation"][0]): Promise<WorkerToHostMethods["issues.removeRelation"][1]>;
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
   };
@@ -303,6 +305,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.get": "issues.read",
   "issues.create": "issues.create",
   "issues.update": "issues.update",
+  "issues.addRelation": "issues.update",
+  "issues.removeRelation": "issues.update",
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
 
@@ -489,6 +493,12 @@ export function createHostClientHandlers(
     }),
     "issues.update": gated("issues.update", async (params) => {
       return services.issues.update(params);
+    }),
+    "issues.addRelation": gated("issues.addRelation", async (params) => {
+      return services.issues.addRelation(params);
+    }),
+    "issues.removeRelation": gated("issues.removeRelation", async (params) => {
+      return services.issues.removeRelation(params);
     }),
     "issues.listComments": gated("issues.listComments", async (params) => {
       return services.issues.listComments(params);

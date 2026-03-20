@@ -851,7 +851,7 @@ export interface PluginIssueDocumentsClient {
  * Requires:
  * - `issues.read` for read operations
  * - `issues.create` for create
- * - `issues.update` for update
+ * - `issues.update` for update and relation mutations
  * - `issue.comments.read` for `listComments`
  * - `issue.comments.create` for `createComment`
  * - `issue.documents.read` for `documents.list` and `documents.get`
@@ -884,6 +884,18 @@ export interface PluginIssuesClient {
       "title" | "description" | "status" | "priority" | "assigneeAgentId"
     >>,
     companyId: string,
+  ): Promise<Issue>;
+  addRelation(
+    fromIssueId: string,
+    toIssueId: string,
+    companyId: string,
+    relationType?: "blocks",
+  ): Promise<Issue>;
+  removeRelation(
+    fromIssueId: string,
+    toIssueId: string,
+    companyId: string,
+    relationType?: "blocks",
   ): Promise<Issue>;
   listComments(issueId: string, companyId: string): Promise<IssueComment[]>;
   createComment(issueId: string, body: string, companyId: string): Promise<IssueComment>;

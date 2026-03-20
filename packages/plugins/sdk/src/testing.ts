@@ -402,6 +402,68 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         issues.set(issueId, updated);
         return updated;
       },
+      async addRelation(fromIssueId, toIssueId, companyId, relationType = "blocks") {
+        requireCapability(manifest, capabilitySet, "issues.update");
+        const source = issues.get(fromIssueId);
+        const target = issues.get(toIssueId);
+        if (!isInCompany(source, companyId) || !isInCompany(target, companyId) || !source || !target) {
+          throw new Error("Issue not found");
+        }
+        const nextSource: Issue = {
+          ...source,
+          blocks: [
+            ...(source.blocks ?? []).filter((entry) => !(entry.id === toIssueId && entry.relationType === relationType)),
+            {
+              id: target.id,
+              identifier: target.identifier,
+              title: target.title,
+              status: target.status,
+              priority: target.priority,
+              assigneeAgentId: target.assigneeAgentId,
+              assigneeUserId: target.assigneeUserId,
+              relationType,
+            },
+          ],
+        };
+        const nextTarget: Issue = {
+          ...target,
+          blockedBy: [
+            ...(target.blockedBy ?? []).filter((entry) => !(entry.id === fromIssueId && entry.relationType === relationType)),
+            {
+              id: source.id,
+              identifier: source.identifier,
+              title: source.title,
+              status: source.status,
+              priority: source.priority,
+              assigneeAgentId: source.assigneeAgentId,
+              assigneeUserId: source.assigneeUserId,
+              relationType,
+            },
+          ],
+        };
+        issues.set(fromIssueId, nextSource);
+        issues.set(toIssueId, nextTarget);
+        return nextSource;
+      },
+      async removeRelation(fromIssueId, toIssueId, companyId, relationType = "blocks") {
+        requireCapability(manifest, capabilitySet, "issues.update");
+        const source = issues.get(fromIssueId);
+        const target = issues.get(toIssueId);
+        if (!isInCompany(source, companyId) || !isInCompany(target, companyId) || !source || !target) {
+          throw new Error("Issue not found");
+        }
+        const nextSource: Issue = {
+          ...source,
+          blocks: (source.blocks ?? []).filter((entry) => !(entry.id === toIssueId && entry.relationType === relationType)),
+        };
+        const nextTarget: Issue = {
+          ...target,
+          blockedBy: (target.blockedBy ?? []).filter((entry) => !(entry.id === fromIssueId && entry.relationType === relationType)),
+        };
+        issues.set(fromIssueId, nextSource);
+        issues.set(toIssueId, nextTarget);
+        return nextSource;
+      },
       async listComments(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issue.comments.read");
         if (!isInCompany(issues.get(issueId), companyId)) return [];

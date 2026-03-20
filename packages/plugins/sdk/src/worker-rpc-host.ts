@@ -605,6 +605,24 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           });
         },
 
+        async addRelation(fromIssueId: string, toIssueId: string, companyId: string, relationType = "blocks") {
+          return callHost("issues.addRelation", {
+            companyId,
+            fromIssueId,
+            toIssueId,
+            relationType,
+          });
+        },
+
+        async removeRelation(fromIssueId: string, toIssueId: string, companyId: string, relationType = "blocks") {
+          return callHost("issues.removeRelation", {
+            companyId,
+            fromIssueId,
+            toIssueId,
+            relationType,
+          });
+        },
+
         async listComments(issueId: string, companyId: string) {
           return callHost("issues.listComments", { issueId, companyId });
         },

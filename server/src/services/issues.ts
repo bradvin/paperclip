@@ -1210,6 +1210,25 @@ export function issueService(db: Db) {
       return relation ?? null;
     },
 
+    removeRelation: async (input: {
+      companyId: string;
+      fromIssueId: string;
+      toIssueId: string;
+      relationType?: "blocks";
+    }) => {
+      const relationType = input.relationType ?? "blocks";
+      const [relation] = await db
+        .delete(issueRelations)
+        .where(and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.fromIssueId, input.fromIssueId),
+          eq(issueRelations.toIssueId, input.toIssueId),
+          eq(issueRelations.relationType, relationType),
+        ))
+        .returning();
+      return relation ?? null;
+    },
+
     update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
       const existing = await db
         .select()

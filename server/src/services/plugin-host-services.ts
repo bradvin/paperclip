@@ -778,6 +778,32 @@ export function buildHostServices(
         requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         return (await issues.update(params.issueId, params.patch as any)) as Issue;
       },
+      async addRelation(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.fromIssueId), companyId);
+        requireInCompany("Issue", await issues.getById(params.toIssueId), companyId);
+        await issues.addRelation({
+          companyId,
+          fromIssueId: params.fromIssueId,
+          toIssueId: params.toIssueId,
+          relationType: params.relationType,
+        });
+        return (await issues.getById(params.fromIssueId)) as Issue;
+      },
+      async removeRelation(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        requireInCompany("Issue", await issues.getById(params.fromIssueId), companyId);
+        requireInCompany("Issue", await issues.getById(params.toIssueId), companyId);
+        await issues.removeRelation({
+          companyId,
+          fromIssueId: params.fromIssueId,
+          toIssueId: params.toIssueId,
+          relationType: params.relationType,
+        });
+        return (await issues.getById(params.fromIssueId)) as Issue;
+      },
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
