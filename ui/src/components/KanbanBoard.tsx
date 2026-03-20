@@ -20,6 +20,7 @@ import {
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
+import { IssueDependencyBadges } from "./IssueDependencyBadges";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
@@ -132,6 +133,8 @@ function KanbanCard({
     if (!id || !agents) return null;
     return agents.find((a) => a.id === id)?.name ?? null;
   };
+  const blockedByCount = issue.blockedBy?.length ?? 0;
+  const blocksCount = issue.blocks?.length ?? 0;
 
   return (
     <div
@@ -163,6 +166,12 @@ function KanbanCard({
           )}
         </div>
         <p className="text-sm leading-snug line-clamp-2 mb-2">{issue.title}</p>
+        <IssueDependencyBadges
+          blockedByCount={blockedByCount}
+          blocksCount={blocksCount}
+          withTooltips
+          className="mb-2"
+        />
         <div className="flex items-center gap-2">
           <PriorityIcon priority={issue.priority} />
           {issue.assigneeAgentId && (() => {

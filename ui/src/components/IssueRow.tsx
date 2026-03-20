@@ -4,6 +4,7 @@ import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
 import { PriorityIcon } from "./PriorityIcon";
 import { StatusIcon } from "./StatusIcon";
+import { IssueDependencyBadges } from "./IssueDependencyBadges";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -38,6 +39,9 @@ export function IssueRow({
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
+  const blockedByCount = issue.blockedBy?.length ?? 0;
+  const blocksCount = issue.blocks?.length ?? 0;
+  const hasDependencyBadges = blockedByCount > 0 || blocksCount > 0;
 
   return (
     <Link
@@ -55,6 +59,15 @@ export function IssueRow({
         <span className="line-clamp-2 text-sm sm:order-2 sm:min-w-0 sm:flex-1 sm:truncate sm:line-clamp-none">
           {issue.title}
         </span>
+        {hasDependencyBadges ? (
+          <span className="sm:hidden">
+            <IssueDependencyBadges
+              blockedByCount={blockedByCount}
+              blocksCount={blocksCount}
+              withTooltips
+            />
+          </span>
+        ) : null}
         <span className="flex items-center gap-2 sm:order-1 sm:shrink-0">
           {desktopLeadingSpacer ? (
             <span className="hidden w-3.5 shrink-0 sm:block" />
@@ -82,8 +95,13 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
-      {(desktopTrailing || trailingMeta) ? (
+      {(hasDependencyBadges || desktopTrailing || trailingMeta) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+          <IssueDependencyBadges
+            blockedByCount={blockedByCount}
+            blocksCount={blocksCount}
+            withTooltips
+          />
           {desktopTrailing}
           {trailingMeta ? (
             <span className="text-xs text-muted-foreground">{trailingMeta}</span>

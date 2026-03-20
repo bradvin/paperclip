@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueRelationSummary } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -20,7 +20,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Copy, Check } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, Copy, Check, CircleMinus, Link2 } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 const EXECUTION_WORKSPACE_OPTIONS = [
@@ -59,11 +59,21 @@ interface IssuePropertiesProps {
   inline?: boolean;
 }
 
-function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+function PropertyRow({
+  label,
+  children,
+  align = "center",
+}: {
+  label: string;
+  children: React.ReactNode;
+  align?: "center" | "start";
+}) {
   return (
-    <div className="flex items-center gap-3 py-1.5">
+    <div className={cn("flex gap-3 py-1.5", align === "start" ? "items-start" : "items-center")}>
       <span className="text-xs text-muted-foreground shrink-0 w-20">{label}</span>
-      <div className="flex items-center gap-1.5 min-w-0 flex-1">{children}</div>
+      <div className={cn("gap-1.5 min-w-0 flex-1", align === "start" ? "flex items-start" : "flex items-center")}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -169,6 +179,40 @@ function CopyableValue({ value, label, mono, className }: { value: string; label
       >
         {copied ? <Check className="h-3 w-3 text-green-500" /> : <Copy className="h-3 w-3" />}
       </button>
+    </div>
+  );
+}
+
+function IssueDependencyList({
+  label,
+  icon,
+  relations,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  relations: IssueRelationSummary[];
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {relations.map((relation) => {
+          const relationPathId = relation.identifier ?? relation.id;
+          const relationIdentifier = relation.identifier ?? relation.id.slice(0, 8);
+          return (
+            <Link
+              key={`${label}:${relation.id}`}
+              to={`/issues/${relationPathId}`}
+              className="rounded-md border border-border/60 px-2 py-1 text-xs font-mono text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+            >
+              {relationIdentifier}
+            </Link>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -316,6 +360,8 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
+  const blockedBy = issue.blockedBy ?? [];
+  const blocks = issue.blocks ?? [];
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
@@ -759,6 +805,31 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             <span className="text-sm font-mono">{issue.requestDepth}</span>
           </PropertyRow>
         )}
+
+        <PropertyRow label="Dependencies" align="start">
+          <div className="w-full space-y-2">
+            {blockedBy.length > 0 || blocks.length > 0 ? (
+              <div className="space-y-3">
+                {blockedBy.length > 0 ? (
+                  <IssueDependencyList
+                    label={`Blocked by ${blockedBy.length}`}
+                    icon={<CircleMinus className="h-3.5 w-3.5 text-rose-500" />}
+                    relations={blockedBy}
+                  />
+                ) : null}
+                {blocks.length > 0 ? (
+                  <IssueDependencyList
+                    label={`Blocking ${blocks.length}`}
+                    icon={<Link2 className="h-3.5 w-3.5 text-orange-500" />}
+                    relations={blocks}
+                  />
+                ) : null}
+              </div>
+            ) : (
+              <span className="text-sm text-muted-foreground">No blocking relationships</span>
+            )}
+          </div>
+        </PropertyRow>
       </div>
 
       <Separator />
