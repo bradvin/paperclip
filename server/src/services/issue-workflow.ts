@@ -1,6 +1,14 @@
 import { conflict } from "../errors.js";
 
-export const ASSIGNABLE_AGENT_STATUSES = new Set([
+export const MANUALLY_ASSIGNABLE_AGENT_STATUSES = new Set([
+  "active",
+  "idle",
+  "running",
+  "error",
+  "paused",
+]);
+
+export const INVOKABLE_AGENT_STATUSES = new Set([
   "active",
   "idle",
   "running",
@@ -21,7 +29,11 @@ const ISSUE_TRANSITIONS: Record<string, Set<string>> = {
 };
 
 export function isAssignableAgentStatus(status: string | null | undefined) {
-  return typeof status === "string" && ASSIGNABLE_AGENT_STATUSES.has(status);
+  return typeof status === "string" && MANUALLY_ASSIGNABLE_AGENT_STATUSES.has(status);
+}
+
+export function isInvokableAgentStatus(status: string | null | undefined) {
+  return typeof status === "string" && INVOKABLE_AGENT_STATUSES.has(status);
 }
 
 export function canTransitionIssueStatus(from: string, to: string) {

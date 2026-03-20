@@ -179,6 +179,7 @@ export interface DummyIssueScenario {
 }
 
 export interface DummyIssueSuiteResult {
+  project: Project;
   suiteTag: string;
   scenarios: DummyIssueScenario[];
   notes: string[];

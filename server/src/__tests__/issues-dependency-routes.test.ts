@@ -30,6 +30,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockProjectService = vi.hoisted(() => ({
   getById: vi.fn(),
   listByIds: vi.fn(),
+  create: vi.fn(),
 }));
 
 const mockGoalService = vi.hoisted(() => ({
@@ -162,6 +163,39 @@ describe("issue dependency route behavior", () => {
 
     mockProjectService.getById.mockResolvedValue(null);
     mockProjectService.listByIds.mockResolvedValue([]);
+    mockProjectService.create.mockResolvedValue({
+      id: "project-dummy",
+      companyId: "company-1",
+      name: "Dummy Workflow Project",
+      description: "Dummy workflow project",
+      status: "in_progress",
+      goalId: null,
+      goalIds: [],
+      goals: [],
+      leadAgentId: null,
+      targetDate: null,
+      color: "#000000",
+      pauseReason: null,
+      pausedAt: null,
+      executionWorkspacePolicy: null,
+      codebase: {
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        defaultRef: null,
+        repoName: null,
+        localFolder: null,
+        managedFolder: "/tmp/project-dummy",
+        effectiveLocalFolder: "/tmp/project-dummy",
+        origin: "managed_checkout",
+      },
+      workspaces: [],
+      primaryWorkspace: null,
+      archivedAt: null,
+      createdAt: new Date("2026-03-20T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T12:00:00.000Z"),
+      urlKey: "dummy-workflow-project",
+    });
     mockGoalService.getById.mockResolvedValue(null);
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
     mockDocumentService.getIssueDocumentPayload.mockResolvedValue({});
@@ -189,7 +223,12 @@ describe("issue dependency route behavior", () => {
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
-    mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.getById.mockImplementation(async (id: string) => ({
+      id,
+      companyId: "company-1",
+      role: "engineer",
+      status: "idle",
+    }));
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.getCompanyCeo.mockResolvedValue(null);
     mockAgentService.selectDeterministicAssignee.mockResolvedValue(null);
@@ -779,6 +818,7 @@ describe("issue dependency route behavior", () => {
       id: "ceo-1",
       companyId: "company-1",
       role: "ceo",
+      status: "idle",
     });
     mockIssueService.update
       .mockResolvedValueOnce({
@@ -842,6 +882,68 @@ describe("issue dependency route behavior", () => {
           reason: "ceo_fallback",
           assigneeAgentId: "ceo-1",
         }),
+      }),
+    );
+  });
+
+  it("does not auto-route to a paused CEO fallback", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-10d",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-9",
+      hiddenAt: null,
+    });
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue(null);
+    mockAgentService.getCompanyCeo.mockResolvedValue({
+      id: "ceo-1",
+      companyId: "company-1",
+      role: "ceo",
+      status: "paused",
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-10d",
+      companyId: "company-1",
+      identifier: "PAP-10D",
+      title: "Ready for QA fallback",
+      status: "testing",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-9",
+      hiddenAt: null,
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-10d")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        comment: "Ready for QA, but only the paused CEO is left.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenCalledWith("company-1", {
+      roles: ["qa"],
+      preferredAgentId: "qa-9",
+    });
+    expect(mockAgentService.getCompanyCeo).toHaveBeenCalledWith("company-1");
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(res.body.assigneeAgentId).toBeNull();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.auto_routed",
+        details: expect.objectContaining({ reason: "ceo_fallback" }),
       }),
     );
   });
@@ -926,6 +1028,7 @@ describe("issue dependency route behavior", () => {
       const issue = {
         id: `dummy-${issueCounter}`,
         companyId: "company-1",
+        projectId: data.projectId ?? null,
         identifier: `PAP-${issueCounter}`,
         title: data.title,
         description: data.description ?? null,
@@ -950,7 +1053,10 @@ describe("issue dependency route behavior", () => {
       return updated;
     });
     mockIssueService.getById.mockImplementation(async (id: string) => createdIssues.get(id) ?? null);
-    mockAgentService.selectDeterministicAssignee.mockImplementation(async (_companyId: string, input: { roles: string[] }) => {
+    mockAgentService.selectDeterministicAssignee.mockImplementation(async (
+      _companyId: string,
+      input: { roles: string[]; eligibility?: "invokable" | "manual" },
+    ) => {
       if (input.roles[0] === "qa") {
         return { id: "qa-1", companyId: "company-1", role: "qa" };
       }
@@ -960,11 +1066,13 @@ describe("issue dependency route behavior", () => {
       id: "ceo-1",
       companyId: "company-1",
       role: "ceo",
+      status: "idle",
     });
 
     const res = await request(createIssueApp()).post("/api/companies/company-1/issues/dummy-flow").send({});
 
     expect(res.status).toBe(201);
+    expect(res.body.project.id).toBe("project-dummy");
     expect(res.body.suiteTag).toMatch(/^20/);
     expect(res.body.scenarios).toHaveLength(7);
     expect(res.body.notes[0]).toContain("without waking agents automatically");
@@ -976,9 +1084,21 @@ describe("issue dependency route behavior", () => {
     const blockerScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocker");
 
     expect(todoScenario.issue.assigneeAgentId).toBe("eng-1");
+    expect(todoScenario.issue.projectId).toBe("project-dummy");
     expect(testingScenario.issue.assigneeAgentId).toBe("qa-1");
+    expect(testingScenario.issue.projectId).toBe("project-dummy");
     expect(reviewScenario.issue.assigneeUserId).toBe("user-1");
+    expect(reviewScenario.issue.projectId).toBe("project-dummy");
     expect(blockedScenario.issue.assigneeAgentId).toBe("eng-1");
+    expect(blockedScenario.issue.projectId).toBe("project-dummy");
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenNthCalledWith(1, "company-1", {
+      roles: ["engineer", "devops"],
+      eligibility: "manual",
+    });
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenNthCalledWith(2, "company-1", {
+      roles: ["qa"],
+      eligibility: "manual",
+    });
 
     expect(mockIssueService.addRelation).toHaveBeenCalledWith({
       companyId: "company-1",
@@ -988,6 +1108,62 @@ describe("issue dependency route behavior", () => {
       createdByAgentId: null,
       createdByUserId: "user-1",
     });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("creates dummy issues with a paused CEO as a manual fallback assignee", async () => {
+    const createdIssues = new Map<string, any>();
+    let issueCounter = 0;
+
+    mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => {
+      issueCounter += 1;
+      const issue = {
+        id: `dummy-paused-${issueCounter}`,
+        companyId: "company-1",
+        projectId: data.projectId ?? null,
+        identifier: `PAP-P${issueCounter}`,
+        title: data.title,
+        description: data.description ?? null,
+        status: data.status,
+        priority: data.priority ?? "medium",
+        assigneeAgentId: data.assigneeAgentId ?? null,
+        assigneeUserId: data.assigneeUserId ?? null,
+        createdByUserId: "user-1",
+        createdByAgentId: null,
+        reviewOwnerUserId: data.reviewOwnerUserId ?? "user-1",
+        lastEngineerAgentId: null,
+        lastQaAgentId: null,
+        hiddenAt: null,
+      };
+      createdIssues.set(issue.id, issue);
+      return issue;
+    });
+    mockIssueService.getById.mockImplementation(async (id: string) => createdIssues.get(id) ?? null);
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue(null);
+    mockAgentService.getCompanyCeo.mockResolvedValue({
+      id: "ceo-1",
+      companyId: "company-1",
+      role: "ceo",
+      status: "paused",
+    });
+
+    const res = await request(createIssueApp()).post("/api/companies/company-1/issues/dummy-flow").send({});
+
+    expect(res.status).toBe(201);
+    expect(res.body.project.id).toBe("project-dummy");
+    const todoScenario = res.body.scenarios.find((scenario: any) => scenario.key === "todo-routing");
+    const testingScenario = res.body.scenarios.find((scenario: any) => scenario.key === "testing-routing");
+    const blockerScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocker");
+    const blockedScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocked");
+
+    expect(todoScenario.issue.assigneeAgentId).toBe("ceo-1");
+    expect(todoScenario.issue.projectId).toBe("project-dummy");
+    expect(testingScenario.issue.assigneeAgentId).toBe("ceo-1");
+    expect(testingScenario.issue.projectId).toBe("project-dummy");
+    expect(blockerScenario.issue.assigneeAgentId).toBe("ceo-1");
+    expect(blockerScenario.issue.projectId).toBe("project-dummy");
+    expect(blockedScenario.issue.assigneeAgentId).toBe("ceo-1");
+    expect(blockedScenario.issue.projectId).toBe("project-dummy");
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 

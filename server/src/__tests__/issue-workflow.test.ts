@@ -3,6 +3,7 @@ import {
   assertIssueStatusTransition,
   canTransitionIssueStatus,
   isAssignableAgentStatus,
+  isInvokableAgentStatus,
   resolveReleaseStatus,
 } from "../services/issue-workflow.js";
 
@@ -28,14 +29,24 @@ describe("issue workflow rules", () => {
     );
   });
 
-  it("only treats invokable agent states as assignable", () => {
+  it("allows paused agents to remain manually assignable", () => {
     expect(isAssignableAgentStatus("active")).toBe(true);
     expect(isAssignableAgentStatus("idle")).toBe(true);
     expect(isAssignableAgentStatus("running")).toBe(true);
     expect(isAssignableAgentStatus("error")).toBe(true);
-    expect(isAssignableAgentStatus("paused")).toBe(false);
+    expect(isAssignableAgentStatus("paused")).toBe(true);
     expect(isAssignableAgentStatus("pending_approval")).toBe(false);
     expect(isAssignableAgentStatus("terminated")).toBe(false);
+  });
+
+  it("still restricts auto-routing and invocation to invokable agent states", () => {
+    expect(isInvokableAgentStatus("active")).toBe(true);
+    expect(isInvokableAgentStatus("idle")).toBe(true);
+    expect(isInvokableAgentStatus("running")).toBe(true);
+    expect(isInvokableAgentStatus("error")).toBe(true);
+    expect(isInvokableAgentStatus("paused")).toBe(false);
+    expect(isInvokableAgentStatus("pending_approval")).toBe(false);
+    expect(isInvokableAgentStatus("terminated")).toBe(false);
   });
 
   it("restores the queued workflow stage on release", () => {

@@ -215,6 +215,7 @@ Invariants:
 - single assignee only
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - hierarchy (`parent_id`) is distinct from dependency relations; blocked work is modeled separately
+- paused agents may remain assignees and may receive manual board assignments, but automatic routing/invocation must exclude paused agents
 - `in_progress` requires assignee
 - terminal states: `done | cancelled`
 

@@ -4,12 +4,13 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
+import { issuesApi } from "../api/issues";
 import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "../components/StatusBadge";
-import { Settings, Check, Pause, Play } from "lucide-react";
+import { Settings, Check, Pause, Play, FlaskConical, Loader2 } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -113,6 +114,35 @@ export function CompanySettings() {
             ? `${result.company.name} paused ${result.affectedAgentCount} agent${result.affectedAgentCount === 1 ? "" : "s"}.`
             : `${result.company.name} resumed ${result.affectedAgentCount} agent${result.affectedAgentCount === 1 ? "" : "s"}.`,
         tone: "success"
+      });
+    }
+  });
+
+  const createDummySuiteMutation = useMutation({
+    mutationFn: () => issuesApi.createDummySuite(selectedCompanyId!),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          predicate: ({ queryKey }) => Array.isArray(queryKey) && queryKey[0] === "issues"
+        }),
+        queryClient.invalidateQueries({
+          predicate: ({ queryKey }) => Array.isArray(queryKey) && queryKey[0] === "projects"
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.activity(selectedCompanyId!) }),
+      ]);
+      pushToast({
+        title: `Created ${result.scenarios.length} dummy issues`,
+        body: `${result.project.name} is ready. Agents were not woken automatically.`,
+        tone: "success"
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to create dummy issues",
+        body: error instanceof Error ? error.message : "Unknown error",
+        tone: "error"
       });
     }
   });
@@ -332,6 +362,58 @@ export function CompanySettings() {
               {companyControlMutation.error instanceof Error
                 ? companyControlMutation.error.message
                 : "Failed to change company runtime state"}
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Testing Tools
+        </div>
+        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Dummy workflow project</span>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Create a dummy project plus seeded workflow issues for routing and checkout testing. Issues are assigned when possible, but agents are not woken automatically.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={createDummySuiteMutation.isPending || selectedCompany.status === "archived"}
+              onClick={() => {
+                const confirmed = window.confirm(
+                  `Create a dummy workflow project for "${selectedCompany.name}"?\n\nThis will create a new dummy project and seed workflow test issues inside it. Issues will be assigned when possible, but no agents will be woken automatically.`
+                );
+                if (!confirmed) return;
+                createDummySuiteMutation.mutate();
+              }}
+            >
+              {createDummySuiteMutation.isPending ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <FlaskConical className="h-3.5 w-3.5 mr-1.5" />
+                  Create Dummy Issues
+                </>
+              )}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The generated project and issues are safe to delete after testing.
+          </p>
+          {createDummySuiteMutation.isError && (
+            <p className="text-xs text-destructive">
+              {createDummySuiteMutation.error instanceof Error
+                ? createDummySuiteMutation.error.message
+                : "Failed to create dummy issues"}
             </p>
           )}
         </div>

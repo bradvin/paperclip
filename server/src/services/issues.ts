@@ -34,6 +34,7 @@ import { getDefaultCompanyGoal } from "./goals.js";
 import {
   assertIssueStatusTransition,
   isAssignableAgentStatus,
+  isInvokableAgentStatus,
   resolveReleaseStatus,
 } from "./issue-workflow.js";
 
@@ -644,7 +645,7 @@ function withActiveRuns(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
+  async function getAssigneeAgent(companyId: string, agentId: string) {
     const assignee = await db
       .select({
         id: agents.id,
@@ -660,8 +661,21 @@ export function issueService(db: Db) {
     if (assignee.companyId !== companyId) {
       throw unprocessable("Assignee must belong to same company");
     }
+    return assignee;
+  }
+
+  async function assertAssignableAgent(companyId: string, agentId: string) {
+    const assignee = await getAssigneeAgent(companyId, agentId);
     if (!isAssignableAgentStatus(assignee.status)) {
       throw conflict(`Cannot assign work to ${assignee.status} agents`);
+    }
+    return assignee;
+  }
+
+  async function assertInvokableAgent(companyId: string, agentId: string) {
+    const assignee = await getAssigneeAgent(companyId, agentId);
+    if (!isInvokableAgentStatus(assignee.status)) {
+      throw conflict(`Cannot start work with ${assignee.status} agents`);
     }
     return assignee;
   }
@@ -1382,7 +1396,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
-      const checkoutAgent = await assertAssignableAgent(issueCompany.companyId, agentId);
+      const checkoutAgent = await assertInvokableAgent(issueCompany.companyId, agentId);
 
       const targetResolution = await resolveCheckoutTarget(id, issueCompany.companyId, agentId);
       if (targetResolution.kind === "blocked") {

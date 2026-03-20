@@ -17,7 +17,7 @@ import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
-import { isAssignableAgentStatus } from "./issue-workflow.js";
+import { isAssignableAgentStatus, isInvokableAgentStatus } from "./issue-workflow.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -383,17 +383,26 @@ export function agentService(db: Db) {
 
     selectDeterministicAssignee: async (
       companyId: string,
-      input: { roles: string[]; preferredAgentId?: string | null },
+      input: {
+        roles: string[];
+        preferredAgentId?: string | null;
+        eligibility?: "invokable" | "manual";
+      },
     ) => {
       const roleOrder = Array.from(new Set(input.roles.map((role) => role.trim()).filter(Boolean)));
       if (roleOrder.length === 0) return null;
+      const eligibility = input.eligibility ?? "invokable";
 
       const rows = await db
         .select()
         .from(agents)
         .where(and(eq(agents.companyId, companyId), inArray(agents.role, roleOrder)));
       const candidates = rows
-        .filter((row) => isAssignableAgentStatus(row.status))
+        .filter((row) =>
+          eligibility === "manual"
+            ? isAssignableAgentStatus(row.status)
+            : isInvokableAgentStatus(row.status),
+        )
         .map(normalizeAgentRow);
       if (candidates.length === 0) return null;
 

@@ -104,4 +104,36 @@ describe("selectDeterministicAssignee", () => {
 
     expect(assignee?.id).toBe("eng-2");
   });
+
+  it("can include paused candidates for manual assignment flows", async () => {
+    const dbStub = createSelectSequenceDb([
+      [
+        makeAgentRow({
+          id: "eng-1",
+          name: "Engineer One",
+          role: "engineer",
+          status: "paused",
+          lastHeartbeatAt: new Date("2026-03-19T12:02:00.000Z"),
+        }),
+        makeAgentRow({
+          id: "eng-2",
+          name: "Engineer Two",
+          role: "engineer",
+          status: "pending_approval",
+          lastHeartbeatAt: new Date("2026-03-19T12:05:00.000Z"),
+        }),
+      ],
+      [
+        { assigneeAgentId: "eng-1", status: "todo" },
+      ],
+    ]);
+
+    const agents = agentService(dbStub.db as any);
+    const assignee = await agents.selectDeterministicAssignee("company-1", {
+      roles: ["engineer"],
+      eligibility: "manual",
+    });
+
+    expect(assignee?.id).toBe("eng-1");
+  });
 });
