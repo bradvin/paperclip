@@ -330,13 +330,7 @@ export function companyService(db: Db) {
             pausedAt: null,
             updatedAt: now,
           })
-          .where(
-            and(
-              eq(agents.companyId, id),
-              eq(agents.status, "paused"),
-              eq(agents.pauseReason, "system"),
-            ),
-          )
+          .where(and(eq(agents.companyId, id), eq(agents.status, "paused")))
           .returning({ id: agents.id });
 
         await tx

@@ -289,13 +289,13 @@ export function CompanySettings() {
   const startBlockedByBudget =
     selectedCompany.status === "paused" && selectedCompany.pauseReason === "budget";
   const runtimeAction = selectedCompany.status === "paused" ? "start" : "stop";
-  const runtimeActionLabel = runtimeAction === "stop" ? "STOP" : "START";
+  const runtimeActionLabel = runtimeAction === "stop" ? "Pause All Agents" : "Resume All Agents";
   const runtimeHelpText =
     selectedCompany.status === "paused"
       ? startBlockedByBudget
-        ? "This company is paused by a budget hard-stop. Resolve the budget incident before starting agents again."
-        : "Starting the company resumes the agents that were stopped by the company control."
-      : "Stopping the company pauses all runnable agents in this company and cancels their active heartbeats.";
+        ? "This company is paused by a budget hard-stop. Resolve the budget incident before resuming agents."
+        : "Resuming company runtime will resume all agents that are currently paused."
+      : "Pausing company runtime pauses all agents in this company and cancels their active heartbeats.";
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -331,7 +331,7 @@ export function CompanySettings() {
                 if (!selectedCompanyId) return;
                 if (runtimeAction === "stop") {
                   const confirmed = window.confirm(
-                    `Stop company "${selectedCompany.name}"? This will pause its agents and cancel active heartbeats.`
+                    `Pause all agents in "${selectedCompany.name}"? This will pause all agents and cancel active heartbeats.`
                   );
                   if (!confirmed) return;
                 }
@@ -339,7 +339,7 @@ export function CompanySettings() {
               }}
             >
               {companyControlMutation.isPending ? (
-                runtimeAction === "stop" ? "Stopping..." : "Starting..."
+                runtimeAction === "stop" ? "Pausing..." : "Resuming..."
               ) : (
                 <>
                   {runtimeAction === "stop" ? (
@@ -379,7 +379,7 @@ export function CompanySettings() {
               </div>
               <p className="text-sm text-muted-foreground">
                 Create a deterministic benchmark suite project seeded from the small-set tasks in agent-benchmark (master branch).
-                Issues are assigned manually and no agents are woken automatically.
+                Issues are created unassigned in todo so CEO can assign them on next heartbeat; no agents are woken automatically.
               </p>
             </div>
             <Button
@@ -388,7 +388,7 @@ export function CompanySettings() {
               disabled={createDummySuiteMutation.isPending || selectedCompany.status === "archived"}
               onClick={() => {
                 const confirmed = window.confirm(
-                  `Create a deterministic benchmark suite for "${selectedCompany.name}"?\n\nThis will create a new project seeded with master-branch agent-benchmark small-set issues. Issues are assigned manually and no agents will be woken automatically.`
+                  `Create a deterministic benchmark suite for "${selectedCompany.name}"?\n\nThis will create a new project seeded with master-branch agent-benchmark small-set issues. Issues are created unassigned in todo so CEO can assign them on next heartbeat, and no agents will be woken automatically.`
                 );
                 if (!confirmed) return;
                 createDummySuiteMutation.mutate();
