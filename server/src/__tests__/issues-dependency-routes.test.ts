@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { conflict } from "../errors.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -14,6 +14,8 @@ const mockIssueService = vi.hoisted(() => ({
   getComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   list: vi.fn(),
+  listLabels: vi.fn(),
+  createLabel: vi.fn(),
   create: vi.fn(),
   addRelation: vi.fn(),
   checkout: vi.fn(),
@@ -31,6 +33,7 @@ const mockProjectService = vi.hoisted(() => ({
   getById: vi.fn(),
   listByIds: vi.fn(),
   create: vi.fn(),
+  createWorkspace: vi.fn(),
 }));
 
 const mockGoalService = vi.hoisted(() => ({
@@ -158,11 +161,37 @@ function createAgentIssueApp() {
 }
 
 describe("issue dependency route behavior", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
 
     mockProjectService.getById.mockResolvedValue(null);
     mockProjectService.listByIds.mockResolvedValue([]);
+    mockProjectService.createWorkspace.mockResolvedValue({
+      id: "workspace-dummy",
+      companyId: "company-1",
+      projectId: "project-dummy",
+      name: "Small-Set Workspace",
+      sourceType: "git_repo",
+      cwd: null,
+      repoUrl: "https://github.com/bradvin/agent-benchmark",
+      repoRef: "master",
+      defaultRef: "master",
+      visibility: "default",
+      setupCommand: null,
+      cleanupCommand: null,
+      remoteProvider: null,
+      remoteWorkspaceRef: null,
+      sharedWorkspaceKey: null,
+      metadata: null,
+      isPrimary: true,
+      runtimeServices: [],
+      createdAt: new Date("2026-03-20T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T12:00:00.000Z"),
+    });
     mockProjectService.create.mockResolvedValue({
       id: "project-dummy",
       companyId: "company-1",
@@ -219,6 +248,15 @@ describe("issue dependency route behavior", () => {
     });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.listWakeableDependentsForResolvedBlocker.mockResolvedValue([]);
+    mockIssueService.listLabels.mockResolvedValue([]);
+    mockIssueService.createLabel.mockImplementation(async (_companyId: string, data: { name: string; color: string }) => ({
+      id: `label-${data.name}`,
+      companyId: "company-1",
+      name: data.name,
+      color: data.color,
+      createdAt: new Date("2026-03-20T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T12:00:00.000Z"),
+    }));
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
@@ -1017,154 +1055,6 @@ describe("issue dependency route behavior", () => {
         assigneeUserId: null,
       }),
     );
-  });
-
-  it("creates a dummy workflow suite without waking agents", async () => {
-    const createdIssues = new Map<string, any>();
-    let issueCounter = 0;
-
-    mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => {
-      issueCounter += 1;
-      const issue = {
-        id: `dummy-${issueCounter}`,
-        companyId: "company-1",
-        projectId: data.projectId ?? null,
-        identifier: `PAP-${issueCounter}`,
-        title: data.title,
-        description: data.description ?? null,
-        status: data.status,
-        priority: data.priority ?? "medium",
-        assigneeAgentId: data.assigneeAgentId ?? null,
-        assigneeUserId: data.assigneeUserId ?? null,
-        createdByUserId: "user-1",
-        createdByAgentId: null,
-        reviewOwnerUserId: data.reviewOwnerUserId ?? "user-1",
-        lastEngineerAgentId: null,
-        lastQaAgentId: null,
-        hiddenAt: null,
-      };
-      createdIssues.set(issue.id, issue);
-      return issue;
-    });
-    mockIssueService.update.mockImplementation(async (id: string, data: Record<string, unknown>) => {
-      const existing = createdIssues.get(id);
-      const updated = { ...existing, ...data };
-      createdIssues.set(id, updated);
-      return updated;
-    });
-    mockIssueService.getById.mockImplementation(async (id: string) => createdIssues.get(id) ?? null);
-    mockAgentService.selectDeterministicAssignee.mockImplementation(async (
-      _companyId: string,
-      input: { roles: string[]; eligibility?: "invokable" | "manual" },
-    ) => {
-      if (input.roles[0] === "qa") {
-        return { id: "qa-1", companyId: "company-1", role: "qa" };
-      }
-      return { id: "eng-1", companyId: "company-1", role: "engineer" };
-    });
-    mockAgentService.getCompanyCeo.mockResolvedValue({
-      id: "ceo-1",
-      companyId: "company-1",
-      role: "ceo",
-      status: "idle",
-    });
-
-    const res = await request(createIssueApp()).post("/api/companies/company-1/issues/dummy-flow").send({});
-
-    expect(res.status).toBe(201);
-    expect(res.body.project.id).toBe("project-dummy");
-    expect(res.body.suiteTag).toMatch(/^20/);
-    expect(res.body.scenarios).toHaveLength(7);
-    expect(res.body.notes[0]).toContain("without waking agents automatically");
-
-    const todoScenario = res.body.scenarios.find((scenario: any) => scenario.key === "todo-routing");
-    const testingScenario = res.body.scenarios.find((scenario: any) => scenario.key === "testing-routing");
-    const reviewScenario = res.body.scenarios.find((scenario: any) => scenario.key === "in-review-routing");
-    const blockedScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocked");
-    const blockerScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocker");
-
-    expect(todoScenario.issue.assigneeAgentId).toBe("eng-1");
-    expect(todoScenario.issue.projectId).toBe("project-dummy");
-    expect(testingScenario.issue.assigneeAgentId).toBe("qa-1");
-    expect(testingScenario.issue.projectId).toBe("project-dummy");
-    expect(reviewScenario.issue.assigneeUserId).toBe("user-1");
-    expect(reviewScenario.issue.projectId).toBe("project-dummy");
-    expect(blockedScenario.issue.assigneeAgentId).toBe("eng-1");
-    expect(blockedScenario.issue.projectId).toBe("project-dummy");
-    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenNthCalledWith(1, "company-1", {
-      roles: ["engineer", "devops"],
-      eligibility: "manual",
-    });
-    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenNthCalledWith(2, "company-1", {
-      roles: ["qa"],
-      eligibility: "manual",
-    });
-
-    expect(mockIssueService.addRelation).toHaveBeenCalledWith({
-      companyId: "company-1",
-      fromIssueId: blockerScenario.issue.id,
-      toIssueId: blockedScenario.issue.id,
-      relationType: "blocks",
-      createdByAgentId: null,
-      createdByUserId: "user-1",
-    });
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-  });
-
-  it("creates dummy issues with a paused CEO as a manual fallback assignee", async () => {
-    const createdIssues = new Map<string, any>();
-    let issueCounter = 0;
-
-    mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => {
-      issueCounter += 1;
-      const issue = {
-        id: `dummy-paused-${issueCounter}`,
-        companyId: "company-1",
-        projectId: data.projectId ?? null,
-        identifier: `PAP-P${issueCounter}`,
-        title: data.title,
-        description: data.description ?? null,
-        status: data.status,
-        priority: data.priority ?? "medium",
-        assigneeAgentId: data.assigneeAgentId ?? null,
-        assigneeUserId: data.assigneeUserId ?? null,
-        createdByUserId: "user-1",
-        createdByAgentId: null,
-        reviewOwnerUserId: data.reviewOwnerUserId ?? "user-1",
-        lastEngineerAgentId: null,
-        lastQaAgentId: null,
-        hiddenAt: null,
-      };
-      createdIssues.set(issue.id, issue);
-      return issue;
-    });
-    mockIssueService.getById.mockImplementation(async (id: string) => createdIssues.get(id) ?? null);
-    mockAgentService.selectDeterministicAssignee.mockResolvedValue(null);
-    mockAgentService.getCompanyCeo.mockResolvedValue({
-      id: "ceo-1",
-      companyId: "company-1",
-      role: "ceo",
-      status: "paused",
-    });
-
-    const res = await request(createIssueApp()).post("/api/companies/company-1/issues/dummy-flow").send({});
-
-    expect(res.status).toBe(201);
-    expect(res.body.project.id).toBe("project-dummy");
-    const todoScenario = res.body.scenarios.find((scenario: any) => scenario.key === "todo-routing");
-    const testingScenario = res.body.scenarios.find((scenario: any) => scenario.key === "testing-routing");
-    const blockerScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocker");
-    const blockedScenario = res.body.scenarios.find((scenario: any) => scenario.key === "dependency-blocked");
-
-    expect(todoScenario.issue.assigneeAgentId).toBe("ceo-1");
-    expect(todoScenario.issue.projectId).toBe("project-dummy");
-    expect(testingScenario.issue.assigneeAgentId).toBe("ceo-1");
-    expect(testingScenario.issue.projectId).toBe("project-dummy");
-    expect(blockerScenario.issue.assigneeAgentId).toBe("ceo-1");
-    expect(blockerScenario.issue.projectId).toBe("project-dummy");
-    expect(blockedScenario.issue.assigneeAgentId).toBe("ceo-1");
-    expect(blockedScenario.issue.projectId).toBe("project-dummy");
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("returns blocks and blockedBy from agents me inbox-lite", async () => {

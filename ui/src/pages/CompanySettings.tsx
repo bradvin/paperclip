@@ -373,12 +373,13 @@ export function CompanySettings() {
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium">Dummy workflow project</span>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">Dummy benchmark project</span>
               </div>
               <p className="text-sm text-muted-foreground">
-                Create a dummy project plus seeded workflow issues for routing and checkout testing. Issues are assigned when possible, but agents are not woken automatically.
+                Create a deterministic benchmark suite project seeded from the small-set tasks in agent-benchmark (master branch).
+                Issues are assigned manually and no agents are woken automatically.
               </p>
             </div>
             <Button
@@ -387,7 +388,7 @@ export function CompanySettings() {
               disabled={createDummySuiteMutation.isPending || selectedCompany.status === "archived"}
               onClick={() => {
                 const confirmed = window.confirm(
-                  `Create a dummy workflow project for "${selectedCompany.name}"?\n\nThis will create a new dummy project and seed workflow test issues inside it. Issues will be assigned when possible, but no agents will be woken automatically.`
+                  `Create a deterministic benchmark suite for "${selectedCompany.name}"?\n\nThis will create a new project seeded with master-branch agent-benchmark small-set issues. Issues are assigned manually and no agents will be woken automatically.`
                 );
                 if (!confirmed) return;
                 createDummySuiteMutation.mutate();

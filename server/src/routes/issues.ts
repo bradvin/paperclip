@@ -35,6 +35,11 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { isInvokableAgentStatus } from "../services/issue-workflow.js";
+import {
+  AGENT_BENCHMARK_REPO_REF,
+  AGENT_BENCHMARK_REPO_URL,
+  loadSmallSetBenchmarkSuite,
+} from "../services/agent-benchmark-dummy.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const AGENT_SELF_UNASSIGNABLE_STATUSES = new Set(["testing", "rework"]);
@@ -233,6 +238,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
     description: string;
     status: string;
     reviewOwnerUserId: string | null;
+    priority: "critical" | "high" | "medium" | "low";
+    labelIds?: string[];
     assigneeAgentId?: string | null;
     assigneeUserId?: string | null;
     autoRoute?: boolean;
@@ -242,7 +249,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       title: input.title,
       description: input.description,
       status: input.status,
-      priority: "medium",
+      priority: input.priority,
+      labelIds: input.labelIds,
       reviewOwnerUserId: input.reviewOwnerUserId,
       assigneeAgentId: input.assigneeAgentId,
       assigneeUserId: input.assigneeUserId,
@@ -987,12 +995,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const actor = getActorInfo(req);
     const suiteTag = buildDummySuiteTag();
-    const titlePrefix = `[Dummy Flow ${suiteTag}]`;
+    const titlePrefix = `[Small-Set Benchmark ${suiteTag}]`;
     const project = await projectsSvc.create(companyId, {
-      name: `${titlePrefix} Workflow Test Project`,
+      name: `${titlePrefix} Project`,
       description:
-        "Dummy workflow project created for routing and checkout validation scenarios. Safe to delete after testing.",
+        "Deterministic agent-benchmark small-set task pack used to exercise dependency and checkout behavior.",
       status: "in_progress",
+    });
+    await projectsSvc.createWorkspace(project.id, {
+      name: `${titlePrefix} Workspace`,
+      sourceType: "git_repo",
+      repoUrl: AGENT_BENCHMARK_REPO_URL,
+      repoRef: AGENT_BENCHMARK_REPO_REF,
+      isPrimary: true,
     });
     await logActivity(db, {
       companyId,
@@ -1009,6 +1024,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         suiteTag,
       },
     });
+    const suite = await loadSmallSetBenchmarkSuite();
     const reviewOwnerUserId = actor.actorType === "user" ? actor.actorId : null;
     const scenarios: Array<{
       key: string;
@@ -1017,173 +1033,79 @@ export function issueRoutes(db: Db, storage: StorageService) {
       issue: Awaited<ReturnType<typeof svc.create>>;
     }> = [];
     const notes: string[] = [
-      "Dummy issues are created with manual assignees when available, without waking agents automatically, so you can start runs manually and compare token usage across iterations.",
+      "Dummy issues are created with manual assignment only. They are seeded in todo, can be run manually, and do not wake agents automatically.",
+      "Project workspace is linked to the master branch of agent-benchmark; no harness branch is surfaced to users.",
     ];
 
     const implementationAgent = await agentsSvc.selectDeterministicAssignee(companyId, {
       roles: ["engineer", "devops"],
       eligibility: "manual",
     });
-    const qaAgent = await agentsSvc.selectDeterministicAssignee(companyId, {
-      roles: ["qa"],
-      eligibility: "manual",
-    });
     const companyCeo = await agentsSvc.getCompanyCeo(companyId);
 
     if (!implementationAgent && !companyCeo) {
-      notes.push("No engineer, devops, or CEO agent is available, so implementation scenarios may stay unassigned.");
-    }
-    if (!qaAgent && !companyCeo) {
-      notes.push("No QA or CEO agent is available, so testing scenarios may stay unassigned.");
+      notes.push("No engineer, devops, or CEO agent is available, so benchmark issues may stay unassigned.");
     }
 
-    const todoIssue = await createDummyScenarioIssue({
-      companyId,
-      actor,
-      title: `${titlePrefix} Todo routing scenario`,
-      description:
-        "Dummy workflow scenario.\n\nExpected: seeded in `todo` with an implementation assignee so you can start the run manually without relying on automatic routing.",
-      projectId: project.id,
-      status: "todo",
-      reviewOwnerUserId,
-      assigneeAgentId: implementationAgent?.id ?? companyCeo?.id ?? null,
-      autoRoute: false,
-    });
-    scenarios.push({
-      key: "todo-routing",
-      label: "Todo routing",
-      expectedFlow: "Should already have an engineer/devops assignee so you can start the run manually.",
-      issue: todoIssue,
-    });
+    const existingLabels = await svc.listLabels(companyId);
+    const labelColorByType: Record<string, string> = {
+      bug: "#ef4444",
+      feature: "#2563eb",
+      docs: "#059669",
+      refactor: "#7c3aed",
+    };
+    const labelIdByType = new Map<string, string>();
+    for (const task of suite.tasks) {
+      if (labelIdByType.has(task.sourceType)) continue;
+      const existing = existingLabels.find((label) => label.name === task.sourceType);
+      const label =
+        existing ??
+        (await svc.createLabel(companyId, {
+          name: task.sourceType,
+          color: labelColorByType[task.sourceType] ?? "#6b7280",
+        }));
+      if (!label?.id) {
+        throw new Error("Failed to create benchmark issue label");
+      }
+      labelIdByType.set(task.sourceType, label.id);
+    }
 
-    const testingIssue = await createDummyScenarioIssue({
-      companyId,
-      actor,
-      title: `${titlePrefix} Testing routing scenario`,
-      description:
-        "Dummy workflow scenario.\n\nExpected: seeded in `testing` with a QA assignee, or the CEO fallback, so you can start the run manually without relying on automatic routing.",
-      projectId: project.id,
-      status: "testing",
-      reviewOwnerUserId,
-      assigneeAgentId: qaAgent?.id ?? companyCeo?.id ?? null,
-      autoRoute: false,
-    });
-    scenarios.push({
-      key: "testing-routing",
-      label: "Testing routing",
-      expectedFlow: "Should already have a QA or CEO fallback assignee so you can start testing manually.",
-      issue: testingIssue,
-    });
+    const issuesByTaskId = new Map<string, Awaited<ReturnType<typeof svc.create>>>();
+    for (const task of suite.tasks) {
+      const issue = await createDummyScenarioIssue({
+        companyId,
+        actor,
+        title: `${titlePrefix} [${task.id}] ${task.title}`,
+        description: task.description,
+        status: "todo",
+        priority: task.priority,
+        labelIds: [labelIdByType.get(task.sourceType)!],
+        projectId: project.id,
+        reviewOwnerUserId,
+        assigneeAgentId: implementationAgent?.id ?? companyCeo?.id ?? null,
+        autoRoute: false,
+      });
+      scenarios.push({
+        key: task.id,
+        label: task.id,
+        expectedFlow: "Use this task in a deterministic small-set run and preserve dependency behavior.",
+        issue,
+      });
+      issuesByTaskId.set(task.id, issue);
+    }
 
-    const inReviewIssue = await createDummyScenarioIssue({
-      companyId,
-      actor,
-      title: `${titlePrefix} Human review scenario`,
-      description:
-        "Dummy workflow scenario.\n\nExpected: seeded in `in_review` with the board review owner so manual review can start immediately.",
-      projectId: project.id,
-      status: "in_review",
-      reviewOwnerUserId,
-      assigneeAgentId: null,
-      assigneeUserId: reviewOwnerUserId,
-      autoRoute: false,
-    });
-    scenarios.push({
-      key: "in-review-routing",
-      label: "Human review routing",
-      expectedFlow: "Should assign to the board review owner immediately.",
-      issue: inReviewIssue,
-    });
-
-    const reworkIssue = await createDummyScenarioIssue({
-      companyId,
-      actor,
-      title: `${titlePrefix} Rework routing scenario`,
-      description:
-        "Dummy workflow scenario.\n\nExpected: seeded in `rework` with an implementation assignee so you can restart work manually from the rework lane.",
-      projectId: project.id,
-      status: "rework",
-      reviewOwnerUserId,
-      assigneeAgentId: implementationAgent?.id ?? companyCeo?.id ?? null,
-      autoRoute: false,
-    });
-    scenarios.push({
-      key: "rework-routing",
-      label: "Rework routing",
-      expectedFlow: "Should already have an engineer/devops or CEO fallback assignee for manual restart.",
-      issue: reworkIssue,
-    });
-
-    const mergingIssue = await createDummyScenarioIssue({
-      companyId,
-      actor,
-      title: `${titlePrefix} Merging routing scenario`,
-      description:
-        "Dummy workflow scenario.\n\nExpected: seeded in `merging` with a devops/engineering assignee so integration work can be started manually.",
-      projectId: project.id,
-      status: "merging",
-      reviewOwnerUserId,
-      assigneeAgentId: implementationAgent?.id ?? companyCeo?.id ?? null,
-      autoRoute: false,
-    });
-    scenarios.push({
-      key: "merging-routing",
-      label: "Merging routing",
-      expectedFlow: "Should already have a devops/engineering or CEO fallback assignee for manual integration work.",
-      issue: mergingIssue,
-    });
-
-    const dependencyBlocker = await createDummyScenarioIssue({
-      companyId,
-      actor,
-      title: `${titlePrefix} Dependency blocker`,
-      description:
-        "Dummy workflow scenario.\n\nExpected: this is the actionable blocker. Checking out the blocked companion issue should redirect here.",
-      projectId: project.id,
-      status: "todo",
-      reviewOwnerUserId,
-      assigneeAgentId: implementationAgent?.id ?? companyCeo?.id ?? null,
-      autoRoute: false,
-    });
-    scenarios.push({
-      key: "dependency-blocker",
-      label: "Dependency blocker",
-      expectedFlow: "Acts as the runnable blocker for the blocked checkout scenario.",
-      issue: dependencyBlocker,
-    });
-
-    const blockedAssigneeAgentId =
-      implementationAgent?.id ?? companyCeo?.id ?? dependencyBlocker.assigneeAgentId ?? null;
-    const dependencyBlocked = await createDummyScenarioIssue({
-      companyId,
-      actor,
-      title: `${titlePrefix} Dependency blocked checkout`,
-      description:
-        "Dummy workflow scenario.\n\nExpected: remains `blocked`. If its assignee tries to checkout this issue, Paperclip should redirect pickup to the blocker issue in the same suite.",
-      projectId: project.id,
-      status: "blocked",
-      reviewOwnerUserId,
-      assigneeAgentId: blockedAssigneeAgentId,
-      assigneeUserId: null,
-      autoRoute: false,
-    });
-    await svc.addRelation({
-      companyId,
-      fromIssueId: dependencyBlocker.id,
-      toIssueId: dependencyBlocked.id,
-      relationType: "blocks",
-      createdByAgentId: actor.agentId,
-      createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
-    scenarios.push({
-      key: "dependency-blocked",
-      label: "Dependency checkout redirect",
-      expectedFlow: "A blocked checkout should resolve to the blocker instead of starting blocked work directly.",
-      issue: await svc.getById(dependencyBlocked.id) ?? dependencyBlocked,
-    });
-
-    if (!blockedAssigneeAgentId) {
-      notes.push("The blocked dependency issue is unassigned because no engineer/devops/CEO agent was available to own the checkout redirect scenario.");
+    for (const relation of suite.hardDependencies) {
+      const fromIssue = issuesByTaskId.get(relation.from);
+      const toIssue = issuesByTaskId.get(relation.to);
+      if (!fromIssue || !toIssue) continue;
+      await svc.addRelation({
+        companyId,
+        fromIssueId: fromIssue.id,
+        toIssueId: toIssue.id,
+        relationType: "blocks",
+        createdByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
     }
 
     res.status(201).json({
