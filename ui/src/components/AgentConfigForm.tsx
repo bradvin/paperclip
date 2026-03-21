@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AGENT_ADAPTER_TYPES } from "@paperclipai/shared";
+import { AGENT_ADAPTER_TYPES, AGENT_ROLES } from "@paperclipai/shared";
 import type {
   Agent,
   AdapterEnvironmentTestResult,
@@ -23,7 +23,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
+import { FolderOpen, Heart, ChevronDown, Shield, X } from "lucide-react";
 import { cn } from "../lib/utils";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
@@ -37,6 +37,7 @@ import {
   DraftNumberInput,
   help,
   adapterLabels,
+  roleLabels,
 } from "./agent-config-primitives";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
@@ -319,6 +320,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
+  const [roleOpen, setRoleOpen] = useState(false);
 
   // Create mode helpers
   const val = isCreate ? props.values : null;
@@ -383,6 +385,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
     : false;
+  const identityRole = isCreate ? "general" : eff<string>("identity", "role", props.agent.role);
   const effectiveRuntimeConfig = useMemo(() => {
     if (isCreate) {
       return {
@@ -446,6 +449,40 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 className={inputClass}
                 placeholder="e.g. VP of Engineering"
               />
+            </Field>
+            <Field label="Role" hint={help.role}>
+              <Popover open={roleOpen} onOpenChange={setRoleOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-accent/50 transition-colors w-full justify-between"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <Shield className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                      <span>{roleLabels[identityRole] ?? identityRole}</span>
+                    </span>
+                    <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-44 p-1" align="start">
+                  {AGENT_ROLES.map((role) => (
+                    <button
+                      key={role}
+                      type="button"
+                      className={cn(
+                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        role === identityRole && "bg-accent",
+                      )}
+                      onClick={() => {
+                        mark("identity", "role", role);
+                        setRoleOpen(false);
+                      }}
+                    >
+                      {roleLabels[role]}
+                    </button>
+                  ))}
+                </PopoverContent>
+              </Popover>
             </Field>
             <Field label="Capabilities" hint={help.capabilities}>
               <MarkdownEditor
