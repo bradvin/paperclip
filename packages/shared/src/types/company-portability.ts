@@ -16,6 +16,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   description: string | null;
   brandColor: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  autoAssignTodoOnCeoHeartbeat: boolean;
 }
 
 export interface CompanyPortabilityAgentManifestEntry {

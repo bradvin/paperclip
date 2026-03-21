@@ -602,6 +602,7 @@ export function companyPortabilityService(db: Db) {
           description: company.description ?? null,
           brandColor: company.brandColor ?? null,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents,
+          autoAssignTodoOnCeoHeartbeat: company.autoAssignTodoOnCeoHeartbeat,
         },
         renderCompanyAgentsSection(companyAgentSummaries),
       );
@@ -611,6 +612,7 @@ export function companyPortabilityService(db: Db) {
         description: company.description ?? null,
         brandColor: company.brandColor ?? null,
         requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents,
+        autoAssignTodoOnCeoHeartbeat: company.autoAssignTodoOnCeoHeartbeat,
       };
     }
 
@@ -860,6 +862,9 @@ export function companyPortabilityService(db: Db) {
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
           : true,
+        autoAssignTodoOnCeoHeartbeat: include.company
+          ? (sourceManifest.company?.autoAssignTodoOnCeoHeartbeat ?? false)
+          : false,
       });
       await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
       targetCompany = created;
@@ -873,6 +878,7 @@ export function companyPortabilityService(db: Db) {
           description: sourceManifest.company.description,
           brandColor: sourceManifest.company.brandColor,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
+          autoAssignTodoOnCeoHeartbeat: sourceManifest.company.autoAssignTodoOnCeoHeartbeat,
         });
         targetCompany = updated ?? targetCompany;
         companyAction = "updated";

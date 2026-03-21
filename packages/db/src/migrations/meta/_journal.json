@@ -288,6 +288,13 @@
       "when": 1773962281286,
       "tag": "0040_sparkling_fat_cobra",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1774106728546,
+      "tag": "0041_neat_sway",
+      "breakpoints": true
     }
   ]
 }

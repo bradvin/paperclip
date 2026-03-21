@@ -20,6 +20,7 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   description: z.string().nullable(),
   brandColor: z.string().nullable(),
   requireBoardApprovalForNewAgents: z.boolean(),
+  autoAssignTodoOnCeoHeartbeat: z.boolean(),
 });
 
 export const portabilityAgentManifestEntrySchema = z.object({

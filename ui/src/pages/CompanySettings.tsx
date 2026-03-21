@@ -1,5 +1,6 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { Company } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -91,10 +92,11 @@ export function CompanySettings() {
   });
 
   const settingsMutation = useMutation({
-    mutationFn: (requireApproval: boolean) =>
-      companiesApi.update(selectedCompanyId!, {
-        requireBoardApprovalForNewAgents: requireApproval
-      }),
+    mutationFn: (
+      data: Partial<
+        Pick<Company, "requireBoardApprovalForNewAgents" | "autoAssignTodoOnCeoHeartbeat">
+      >,
+    ) => companiesApi.update(selectedCompanyId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
@@ -379,7 +381,7 @@ export function CompanySettings() {
               </div>
               <p className="text-sm text-muted-foreground">
                 Create a deterministic benchmark suite project seeded from the small-set tasks in agent-benchmark (master branch).
-                Issues are created unassigned in todo so CEO can assign them on next heartbeat; no agents are woken automatically.
+                Issues are created unassigned in todo. If CEO heartbeat auto-assignment is enabled below, the CEO can assign them on the next heartbeat. No agents are woken automatically.
               </p>
             </div>
             <Button
@@ -388,7 +390,7 @@ export function CompanySettings() {
               disabled={createDummySuiteMutation.isPending || selectedCompany.status === "archived"}
               onClick={() => {
                 const confirmed = window.confirm(
-                  `Create a deterministic benchmark suite for "${selectedCompany.name}"?\n\nThis will create a new project seeded with master-branch agent-benchmark small-set issues. Issues are created unassigned in todo so CEO can assign them on next heartbeat, and no agents will be woken automatically.`
+                  `Create a deterministic benchmark suite for "${selectedCompany.name}"?\n\nThis will create a new project seeded with master-branch agent-benchmark small-set issues. Issues are created unassigned in todo, and no agents will be woken automatically. If CEO heartbeat auto-assignment is enabled, the CEO can assign them on a later heartbeat.`
                 );
                 if (!confirmed) return;
                 createDummySuiteMutation.mutate();
@@ -579,7 +581,25 @@ export function CompanySettings() {
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
             checked={!!selectedCompany.requireBoardApprovalForNewAgents}
-            onChange={(v) => settingsMutation.mutate(v)}
+            onChange={(v) =>
+              settingsMutation.mutate({ requireBoardApprovalForNewAgents: v })
+            }
+          />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Workflow
+        </div>
+        <div className="rounded-md border border-border px-4 py-3">
+          <ToggleField
+            label="CEO heartbeat auto-assigns ready todo issues"
+            hint="Before CEO LLM work starts, assign unassigned, unblocked todo issues by priority. Uses the normal invokable auto-routing rules for engineers/devops and only falls back to an invokable CEO when no eligible candidate exists."
+            checked={!!selectedCompany.autoAssignTodoOnCeoHeartbeat}
+            onChange={(v) =>
+              settingsMutation.mutate({ autoAssignTodoOnCeoHeartbeat: v })
+            }
           />
         </div>
       </div>

@@ -16,6 +16,9 @@ export const companies = pgTable(
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(true),
+    autoAssignTodoOnCeoHeartbeat: boolean("auto_assign_todo_on_ceo_heartbeat")
+      .notNull()
+      .default(false),
     brandColor: text("brand_color"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

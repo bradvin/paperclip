@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "auto_assign_todo_on_ceo_heartbeat" boolean DEFAULT false NOT NULL;
