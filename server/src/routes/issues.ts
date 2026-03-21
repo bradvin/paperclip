@@ -1033,18 +1033,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
       issue: Awaited<ReturnType<typeof svc.create>>;
     }> = [];
     const notes: string[] = [
-      "Dummy issues are created with manual assignment only. They are seeded in todo, can be run manually, and do not wake agents automatically.",
+      "Dummy issues are created unassigned in todo and do not wake agents automatically.",
       "Project workspace is linked to the master branch of agent-benchmark; no harness branch is surfaced to users.",
     ];
 
-    const implementationAgent = await agentsSvc.selectDeterministicAssignee(companyId, {
-      roles: ["engineer", "devops"],
-      eligibility: "manual",
-    });
     const companyCeo = await agentsSvc.getCompanyCeo(companyId);
-
-    if (!implementationAgent && !companyCeo) {
-      notes.push("No engineer, devops, or CEO agent is available, so benchmark issues may stay unassigned.");
+    if (!companyCeo) {
+      notes.push("No CEO agent is available, so benchmark issues will stay unassigned.");
     }
 
     const existingLabels = await svc.listLabels(companyId);
@@ -1082,7 +1077,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
         labelIds: [labelIdByType.get(task.sourceType)!],
         projectId: project.id,
         reviewOwnerUserId,
-        assigneeAgentId: implementationAgent?.id ?? companyCeo?.id ?? null,
         autoRoute: false,
       });
       scenarios.push({
