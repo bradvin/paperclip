@@ -171,13 +171,13 @@ describe("issue dependency route behavior", () => {
     mockProjectService.getById.mockResolvedValue(null);
     mockProjectService.listByIds.mockResolvedValue([]);
     mockProjectService.createWorkspace.mockResolvedValue({
-      id: "workspace-dummy",
+      id: "workspace-1",
       companyId: "company-1",
-      projectId: "project-dummy",
-      name: "Small-Set Workspace",
+      projectId: "project-1",
+      name: "Project Workspace",
       sourceType: "git_repo",
       cwd: null,
-      repoUrl: "https://github.com/bradvin/agent-benchmark",
+      repoUrl: "https://example.com/repo",
       repoRef: "master",
       defaultRef: "master",
       visibility: "default",
@@ -193,10 +193,10 @@ describe("issue dependency route behavior", () => {
       updatedAt: new Date("2026-03-20T12:00:00.000Z"),
     });
     mockProjectService.create.mockResolvedValue({
-      id: "project-dummy",
+      id: "project-1",
       companyId: "company-1",
-      name: "Dummy Workflow Project",
-      description: "Dummy workflow project",
+      name: "Workflow Project",
+      description: "Workflow project",
       status: "in_progress",
       goalId: null,
       goalIds: [],
@@ -214,8 +214,8 @@ describe("issue dependency route behavior", () => {
         defaultRef: null,
         repoName: null,
         localFolder: null,
-        managedFolder: "/tmp/project-dummy",
-        effectiveLocalFolder: "/tmp/project-dummy",
+        managedFolder: "/tmp/project-1",
+        effectiveLocalFolder: "/tmp/project-1",
         origin: "managed_checkout",
       },
       workspaces: [],
@@ -223,7 +223,7 @@ describe("issue dependency route behavior", () => {
       archivedAt: null,
       createdAt: new Date("2026-03-20T12:00:00.000Z"),
       updatedAt: new Date("2026-03-20T12:00:00.000Z"),
-      urlKey: "dummy-workflow-project",
+      urlKey: "workflow-project",
     });
     mockGoalService.getById.mockResolvedValue(null);
     mockGoalService.getDefaultCompanyGoal.mockResolvedValue(null);
