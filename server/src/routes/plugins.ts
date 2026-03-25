@@ -85,13 +85,13 @@ interface PluginInstallRequest {
   isLocalPath?: boolean;
 }
 
-interface AvailablePluginExample {
+interface AvailablePluginCatalogItem {
   packageName: string;
   pluginKey: string;
   displayName: string;
   description: string;
   localPath: string;
-  tag: "example";
+  tag: "first_party" | "example";
 }
 
 /** Response body for GET /api/plugins/:pluginId/health */
@@ -114,7 +114,15 @@ const UUID_REGEX =
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 
-const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
+const BUNDLED_PLUGIN_CATALOG: AvailablePluginCatalogItem[] = [
+  {
+    packageName: "@paperclipai/plugin-linear",
+    pluginKey: "paperclip.linear",
+    displayName: "Linear Sync",
+    description: "Connect Paperclip issues to Linear with bidirectional issue, comment, and dependency sync.",
+    localPath: "packages/plugins/linear",
+    tag: "first_party",
+  },
   {
     packageName: "@paperclipai/plugin-hello-world-example",
     pluginKey: "paperclip.hello-world-example",
@@ -141,8 +149,8 @@ const BUNDLED_PLUGIN_EXAMPLES: AvailablePluginExample[] = [
   },
 ];
 
-function listBundledPluginExamples(): AvailablePluginExample[] {
-  return BUNDLED_PLUGIN_EXAMPLES.flatMap((plugin) => {
+function listBundledPluginCatalog(): AvailablePluginCatalogItem[] {
+  return BUNDLED_PLUGIN_CATALOG.flatMap((plugin) => {
     const absoluteLocalPath = path.resolve(REPO_ROOT, plugin.localPath);
     if (!existsSync(absoluteLocalPath)) return [];
     return [{ ...plugin, localPath: absoluteLocalPath }];
@@ -389,14 +397,15 @@ export function pluginRoutes(
   });
 
   /**
-   * GET /api/plugins/examples
+   * GET /api/plugins/catalog
    *
-   * Return first-party example plugins bundled in this repo, if present.
-   * These can be installed through the normal local-path install flow.
+   * Return bundled first-party and example plugins available from this repo
+   * checkout, if present. These can be installed through the normal local-path
+   * install flow.
    */
-  router.get("/plugins/examples", async (req, res) => {
+  router.get("/plugins/catalog", async (req, res) => {
     assertBoard(req);
-    res.json(listBundledPluginExamples());
+    res.json(listBundledPluginCatalog());
   });
 
   // IMPORTANT: Static routes must come before parameterized routes

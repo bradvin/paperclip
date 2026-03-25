@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Puzzle, ArrowLeft, ShieldAlert, ActivitySquare, CheckCircle, XCircle, Loader2, Clock, Cpu, Webhook, CalendarClock, AlertTriangle } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useToast } from "@/context/ToastContext";
 import { Link, Navigate, useParams } from "@/lib/router";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi } from "@/api/plugins";
@@ -25,6 +26,10 @@ import {
   getDefaultValues,
   type JsonSchemaNode,
 } from "@/components/JsonSchemaForm";
+import {
+  LINEAR_PLUGIN_KEY,
+  LinearPluginSettings,
+} from "@/components/plugins/LinearPluginSettings";
 
 /**
  * PluginSettings page component.
@@ -60,6 +65,8 @@ import {
 export function PluginSettings() {
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
+  const queryClient = useQueryClient();
   const { companyPrefix, pluginId } = useParams<{ companyPrefix?: string; pluginId: string }>();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
@@ -112,6 +119,38 @@ export function PluginSettings() {
   // If the plugin has a custom settingsPage slot, prefer that over auto-generated form
   const hasCustomSettingsPage = pluginSlots.length > 0;
 
+  const invalidatePluginQueries = useCallback((targetPluginId: string) => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.all });
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.catalog });
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.detail(targetPluginId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.health(targetPluginId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.dashboard(targetPluginId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.logs(targetPluginId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.plugins.uiContributions });
+  }, [queryClient]);
+
+  const enableMutation = useMutation({
+    mutationFn: (targetPluginId: string) => pluginsApi.enable(targetPluginId),
+    onSuccess: (_, targetPluginId) => {
+      invalidatePluginQueries(targetPluginId);
+      pushToast({ title: "Plugin enabled", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to enable plugin", body: err.message, tone: "error" });
+    },
+  });
+
+  const disableMutation = useMutation({
+    mutationFn: (targetPluginId: string) => pluginsApi.disable(targetPluginId),
+    onSuccess: (_, targetPluginId) => {
+      invalidatePluginQueries(targetPluginId);
+      pushToast({ title: "Plugin disabled", tone: "info" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to disable plugin", body: err.message, tone: "error" });
+    },
+  });
+
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
@@ -142,25 +181,51 @@ export function PluginSettings() {
         : "secondary";
   const pluginDescription = plugin.manifestJson.description || "No description provided.";
   const pluginCapabilities = plugin.manifestJson.capabilities ?? [];
+  const hasBuiltInLinearSettings = plugin.pluginKey === LINEAR_PLUGIN_KEY;
 
   return (
     <div className="space-y-6 max-w-5xl">
-      <div className="flex items-center gap-4">
-        <Link to="/instance/settings/plugins">
-          <Button variant="outline" size="icon" className="h-8 w-8">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </Link>
-        <div className="flex items-center gap-2">
-          <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
-          <Badge variant={statusVariant} className="ml-2">
-            {displayStatus}
-          </Badge>
-          <Badge variant="outline" className="ml-1">
-            v{plugin.manifestJson.version ?? plugin.version}
-          </Badge>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-4">
+          <Link to="/instance/settings/plugins">
+            <Button variant="outline" size="icon" className="h-8 w-8">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          <div className="flex items-center gap-2">
+            <Puzzle className="h-6 w-6 text-muted-foreground" />
+            <h1 className="text-xl font-semibold">{plugin.manifestJson.displayName ?? plugin.packageName}</h1>
+            <Badge variant={statusVariant} className="ml-2">
+              {displayStatus}
+            </Badge>
+            <Badge variant="outline" className="ml-1">
+              v{plugin.manifestJson.version ?? plugin.version}
+            </Badge>
+          </div>
         </div>
+        <Button
+          variant={plugin.status === "ready" ? "outline" : "default"}
+          size="sm"
+          disabled={enableMutation.isPending || disableMutation.isPending}
+          onClick={() => {
+            if (plugin.status === "ready") {
+              disableMutation.mutate(plugin.id);
+            } else {
+              enableMutation.mutate(plugin.id);
+            }
+          }}
+        >
+          {enableMutation.isPending || disableMutation.isPending ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Working...
+            </>
+          ) : plugin.status === "ready" ? (
+            "Disable Plugin"
+          ) : (
+            "Enable Plugin"
+          )}
+        </Button>
       </div>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as "configuration" | "status")} className="space-y-6">
@@ -212,7 +277,13 @@ export function PluginSettings() {
               <div className="space-y-1">
                 <h2 className="text-base font-semibold">Settings</h2>
               </div>
-              {hasCustomSettingsPage ? (
+              {hasBuiltInLinearSettings ? (
+                <LinearPluginSettings
+                  pluginId={pluginId!}
+                  initialValues={configData?.configJson}
+                  isLoading={configLoading}
+                />
+              ) : hasCustomSettingsPage ? (
                 <div className="space-y-3">
                   {pluginSlots.map((slot) => (
                     <PluginSlotMount
