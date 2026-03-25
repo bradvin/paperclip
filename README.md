@@ -1,292 +1,245 @@
-<p align="center">
-  <img src="doc/assets/header.png" alt="Paperclip — runs your business" width="720" />
-</p>
+# Paperclip
 
-<p align="center">
-  <a href="#quickstart"><strong>Quickstart</strong></a> &middot;
-  <a href="doc/ISSUE-STATUS-FLOW.md"><strong>Issue Flow</strong></a> &middot;
-  <a href="https://paperclip.ing/docs"><strong>Docs</strong></a> &middot;
-  <a href="https://github.com/paperclipai/paperclip"><strong>GitHub</strong></a> &middot;
-  <a href="https://discord.gg/m4HZY7xNG3"><strong>Discord</strong></a>
-</p>
+This fork of [paperclipai/paperclip](https://github.com/paperclipai/paperclip) is set up as a control plane for engineering teams.
 
-<p align="center">
-  <a href="https://github.com/paperclipai/paperclip/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
-  <a href="https://github.com/paperclipai/paperclip/stargazers"><img src="https://img.shields.io/github/stars/paperclipai/paperclip?style=flat" alt="Stars" /></a>
-  <a href="https://discord.gg/m4HZY7xNG3"><img src="https://img.shields.io/discord/000000000?label=discord" alt="Discord" /></a>
-</p>
+It keeps the original company, agent, project, issue, and board model, but the workflow and defaults in this fork are aimed at software delivery rather than the upstream "run your business" framing. The important additions are a Linear-oriented issue lifecycle, dependency-aware routing, first-party Linear sync, company runtime controls, and better operational visibility for agent work.
 
-<br/>
+## Fork Differences From Upstream
 
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/773bdfb2-6d1e-4e30-8c5f-3487d5b70c8f" width="600" controls></video>
-</div>
+This fork adds or changes the following behavior compared to the upstream repository:
 
-<br/>
+- Engineering workflow states: `testing`, `in_review`, `rework`, `merging`, and `blocked` are part of the normal runtime model.
+- Deterministic workflow routing: normal queue handoffs are handled by the control plane instead of relying on a CEO heartbeat to notice unassigned work.
+- Dependency-aware execution: issues support first-class `blocks` and `blockedBy` relations, checkout can redirect to actionable blockers, and the UI shows dependency state.
+- Persistent workflow handoff state: when checked-out work is released, Paperclip restores the prior queued state instead of flattening everything back to `todo`.
+- Linear sync plugin: first-party plugin for syncing Paperclip issues, comments, statuses, and blocking relationships with Linear.
+- In-app plugin management: the bundled Linear plugin can be enabled from the UI and configured without hand-editing plugin config.
+- Company-level runtime controls: board users can stop or start an entire company and resume only the agents paused by that action.
+- Cost checkpoints and reporting: operators can mark checkpoints and compare spend between checkpoints on the Costs page.
+- Engineering-team setup helpers: company settings can create a deterministic dummy issue suite for workflow testing, and agent configuration includes an explicit role selector.
+- Optional CEO todo auto-assignment: a company setting can re-enable CEO-based todo assignment, but it is off by default because deterministic routing now covers normal queue movement.
+- Adapter/runtime fixes: this fork also includes reliability fixes for `pi-local`, skill injection, tool-result parsing, and an `openclaw-gateway` challenge rejection crash.
 
-> **Workflow update:** Paperclip now supports deterministic issue routing across `todo`, `testing`, `in_review`, `rework`, `merging`, and dependency-driven `blocked` work. See [`doc/ISSUE-STATUS-FLOW.md`](doc/ISSUE-STATUS-FLOW.md) for the runtime flow.
+## Core Concepts
 
-## Recent additions
+- Company: the top-level operating boundary. In this fork, treat a company as one engineering organization, product line, or tightly related set of repos.
+- Board user: the human operator. Board access is the control surface for approvals, company settings, plugin settings, and review decisions.
+- Agent: an automated worker with a role such as CEO, engineer, QA, or devops.
+- Project: a product area, codebase, repo, or initiative inside a company.
+- Issue: a unit of work. Issues are single-assignee and company-scoped.
+- Dependency relation: an explicit `blocks` or `blockedBy` relationship between issues.
+- Heartbeat: a scheduled wake-up loop for an agent.
+- Plugin: an integration or extension running inside the Paperclip plugin runtime. In this fork, the Linear plugin is the main first-party example.
 
-- Deterministic server-side routing for unassigned `todo`, `testing`, `rework`, `merging`, and `in_review` issues
-- First-class workflow states for `testing`, `rework`, and `merging`
-- Dependency-aware issue checkout with native `blocks` and `blockedBy` relationships
-- Persistent workflow handoff memory so releases restore the previous queued stage instead of flattening back to `todo`
-- Company-level `STOP` / `START` controls so the board can pause or resume an entire company’s agents in one action
+## Default Engineering Workflow
 
-## What is Paperclip?
+Paperclip issue statuses in this fork are:
 
-# Open-source orchestration for zero-human companies
+- `backlog`
+- `todo`
+- `in_progress`
+- `testing`
+- `in_review`
+- `rework`
+- `merging`
+- `blocked`
+- `done`
+- `cancelled`
 
-**If OpenClaw is an _employee_, Paperclip is the _company_**
+`in_progress` is the only active execution state. Every other non-terminal status is a queued, review, or blocked state that describes what should happen next.
 
-Paperclip is a Node.js server and React UI that orchestrates a team of AI agents to run a business. Bring your own agents, assign goals, and track your agents' work and costs from one dashboard.
+| Status | Intended use | Typical next actor |
+| --- | --- | --- |
+| `backlog` | parked work, not yet active | board or lead |
+| `todo` | ready implementation work | engineer or devops |
+| `in_progress` | actively checked out work | current assignee |
+| `testing` | implementation complete, waiting on QA | QA |
+| `in_review` | QA passed, waiting on human decision | board user / reviewer |
+| `rework` | QA or human review requested changes | engineer or devops |
+| `merging` | approved, but integration or merge work remains | devops or engineer |
+| `blocked` | waiting on an unblocker | depends on blocker |
+| `done` | complete | none |
+| `cancelled` | closed without completion | none |
 
-It looks like a task manager — but under the hood it has org charts, budgets, governance, goal alignment, and agent coordination.
+Canonical flow:
 
-**Manage business goals, not pull requests.**
+```text
+backlog -> todo -> in_progress -> testing -> in_review -> done
+```
 
-|        | Step            | Example                                                            |
-| ------ | --------------- | ------------------------------------------------------------------ |
-| **01** | Define the goal | _"Build the #1 AI note-taking app to $1M MRR."_                    |
-| **02** | Hire the team   | CEO, CTO, engineers, designers, marketers — any bot, any provider. |
-| **03** | Approve and run | Review strategy. Set budgets. Hit go. Monitor from the dashboard.  |
+Common alternate paths:
 
-<br/>
+```text
+testing -> rework
+in_review -> rework
+in_review -> merging
+blocked -> todo | testing | rework | merging
+```
 
-> **COMING SOON: Clipmart** — Download and run entire companies with one click. Browse pre-built company templates — full org structures, agent configs, and skills — and import them into your Paperclip instance in seconds.
+Deterministic routing in this fork works like this:
 
-<br/>
+- unassigned `todo` work is assigned server-side to an implementation agent
+- unassigned `testing` work is assigned server-side to QA
+- `in_review` is routed back for human review
+- unassigned `rework` is routed back to implementation
+- `merging` is routed to devops or the most relevant implementation agent
 
-<div align="center">
-<table>
-  <tr>
-    <td align="center"><strong>Works<br/>with</strong></td>
-    <td align="center"><img src="doc/assets/logos/openclaw.svg" width="32" alt="OpenClaw" /><br/><sub>OpenClaw</sub></td>
-    <td align="center"><img src="doc/assets/logos/claude.svg" width="32" alt="Claude" /><br/><sub>Claude Code</sub></td>
-    <td align="center"><img src="doc/assets/logos/codex.svg" width="32" alt="Codex" /><br/><sub>Codex</sub></td>
-    <td align="center"><img src="doc/assets/logos/cursor.svg" width="32" alt="Cursor" /><br/><sub>Cursor</sub></td>
-    <td align="center"><img src="doc/assets/logos/bash.svg" width="32" alt="Bash" /><br/><sub>Bash</sub></td>
-    <td align="center"><img src="doc/assets/logos/http.svg" width="32" alt="HTTP" /><br/><sub>HTTP</sub></td>
-  </tr>
-</table>
+Dependencies are separate from status:
 
-<em>If it can receive a heartbeat, it's hired.</em>
+- use `blocks` and `blockedBy` for actual issue ordering
+- keep `blocked` for work that is not currently actionable
+- if a blocked issue is checked out, Paperclip can redirect to an actionable blocker
 
-</div>
+For full runtime details, see [doc/ISSUE-STATUS-FLOW.md](doc/ISSUE-STATUS-FLOW.md).
 
-<br/>
+## Defaults In This Fork
 
-## Paperclip is right for you if
+- Company status defaults to `active`.
+- Company issue prefix defaults to `PAP`.
+- Company monthly budget defaults to `0`, which means no monthly hard cap has been set yet.
+- `requireBoardApprovalForNewAgents` defaults to `true`.
+- `autoAssignTodoOnCeoHeartbeat` defaults to `false`.
+- Local development uses embedded PostgreSQL when `DATABASE_URL` is unset.
+- Local development storage uses local disk under the Paperclip home directory.
+- The Linear plugin defaults each mapping to:
+  - `syncDirection = bidirectional`
+  - `importLinearIssues = true`
+  - `autoCreateLinearIssues = true`
+  - `syncComments = true`
 
-- ✅ You want to build **autonomous AI companies**
-- ✅ You **coordinate many different agents** (OpenClaw, Codex, Claude, Cursor) toward a common goal
-- ✅ You have **20 simultaneous Claude Code terminals** open and lose track of what everyone is doing
-- ✅ You want agents running **autonomously 24/7**, but still want to audit work and chime in when needed
-- ✅ You want to **monitor costs** and enforce budgets
-- ✅ You want a process for managing agents that **feels like using a task manager**
-- ✅ You want to manage your autonomous businesses **from your phone**
-
-<br/>
-
-## Features
-
-<table>
-<tr>
-<td align="center" width="33%">
-<h3>🔌 Bring Your Own Agent</h3>
-Any agent, any runtime, one org chart. If it can receive a heartbeat, it's hired.
-</td>
-<td align="center" width="33%">
-<h3>🎯 Goal Alignment</h3>
-Every task traces back to the company mission. Agents know <em>what</em> to do and <em>why</em>.
-</td>
-<td align="center" width="33%">
-<h3>💓 Heartbeats</h3>
-Agents wake on a schedule, check work, and act. Delegation flows up and down the org chart.
-</td>
-</tr>
-<tr>
-<td align="center">
-<h3>💰 Cost Control</h3>
-Monthly budgets per agent. When they hit the limit, they stop. No runaway costs.
-</td>
-<td align="center">
-<h3>🏢 Multi-Company</h3>
-One deployment, many companies. Complete data isolation. One control plane for your portfolio.
-</td>
-<td align="center">
-<h3>🎫 Ticket System</h3>
-Every conversation traced. Every decision explained. Full tool-call tracing and immutable audit log.
-</td>
-</tr>
-<tr>
-<td align="center">
-<h3>🛡️ Governance</h3>
-You're the board. Approve hires, override strategy, pause or terminate any agent — at any time.
-</td>
-<td align="center">
-<h3>📊 Org Chart</h3>
-Hierarchies, roles, reporting lines. Your agents have a boss, a title, and a job description.
-</td>
-<td align="center">
-<h3>📱 Mobile Ready</h3>
-Monitor and manage your autonomous businesses from anywhere.
-</td>
-</tr>
-</table>
-
-<br/>
-
-## Problems Paperclip solves
-
-| Without Paperclip                                                                                                                     | With Paperclip                                                                                                                         |
-| ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| ❌ You have 20 Claude Code tabs open and can't track which one does what. On reboot you lose everything.                              | ✅ Tasks are ticket-based, conversations are threaded, sessions persist across reboots.                                                |
-| ❌ You manually gather context from several places to remind your bot what you're actually doing.                                     | ✅ Context flows from the task up through the project and company goals — your agent always knows what to do and why.                  |
-| ❌ Folders of agent configs are disorganized and you're re-inventing task management, communication, and coordination between agents. | ✅ Paperclip gives you org charts, ticketing, delegation, and governance out of the box — so you run a company, not a pile of scripts. |
-| ❌ Runaway loops waste hundreds of dollars of tokens and max your quota before you even know what happened.                           | ✅ Cost tracking surfaces token budgets and throttles agents when they're out. Management prioritizes with budgets.                    |
-| ❌ You have recurring jobs (customer support, social, reports) and have to remember to manually kick them off.                        | ✅ Heartbeats handle regular work on a schedule. Management supervises.                                                                |
-| ❌ You have an idea, you have to find your repo, fire up Claude Code, keep a tab open, and babysit it.                                | ✅ Add a task in Paperclip. Your coding agent works on it until it's done. Management reviews their work.                              |
-
-<br/>
-
-## Why Paperclip is special
-
-Paperclip handles the hard orchestration details correctly.
-
-|                                   |                                                                                                               |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| **Atomic execution.**             | Task checkout and budget enforcement are atomic, so no double-work and no runaway spend.                      |
-| **Instant company stop/start.**  | The board can pause an entire company at once, cancel active heartbeats, and later resume only the agents stopped by that action. |
-| **Deterministic workflow routing.** | Routine issue handoffs happen in the control plane instead of depending on agent heartbeats for clerical routing. |
-| **Persistent agent state.**       | Agents resume the same task context across heartbeats instead of restarting from scratch.                     |
-| **Runtime skill injection.**      | Agents can learn Paperclip workflows and project context at runtime, without retraining.                      |
-| **Governance with rollback.**     | Approval gates are enforced, config changes are revisioned, and bad changes can be rolled back safely.        |
-| **Goal-aware execution.**         | Tasks carry full goal ancestry so agents consistently see the "why," not just a title.                        |
-| **Portable company templates.**   | Export/import orgs, agents, and skills with secret scrubbing and collision handling.                          |
-| **True multi-company isolation.** | Every entity is company-scoped, so one deployment can run many companies with separate data and audit trails. |
-
-<br/>
-
-## What Paperclip is not
-
-|                              |                                                                                                                      |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **Not a chatbot.**           | Agents have jobs, not chat windows.                                                                                  |
-| **Not an agent framework.**  | We don't tell you how to build agents. We tell you how to run a company made of them.                                |
-| **Not a workflow builder.**  | No drag-and-drop pipelines. Paperclip models companies — with org charts, goals, budgets, and governance.            |
-| **Not a prompt manager.**    | Agents bring their own prompts, models, and runtimes. Paperclip manages the organization they work in.               |
-| **Not a single-agent tool.** | This is for teams. If you have one agent, you probably don't need Paperclip. If you have twenty — you definitely do. |
-| **Not a code review tool.**  | Paperclip orchestrates work, not pull requests. Bring your own review process.                                       |
-
-<br/>
+The practical result is that this fork expects the control plane to handle routine engineering queue movement, while a human board user handles approval and final review.
 
 ## Quickstart
 
-Open source. Self-hosted. No Paperclip account required.
+Requirements:
+
+- Node.js 20+
+- pnpm 9+
+
+Manual local run:
 
 ```bash
-npx paperclipai onboard --yes
-```
-
-Or manually:
-
-```bash
-git clone https://github.com/paperclipai/paperclip.git
+git clone https://github.com/bradvin/paperclip.git
 cd paperclip
 pnpm install
 pnpm dev
 ```
 
-This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
+This starts:
 
-> **Requirements:** Node.js 20+, pnpm 9.15+
+- API server at `http://localhost:3100`
+- UI at `http://localhost:3100`
 
-<br/>
+If `DATABASE_URL` is unset, Paperclip uses embedded PostgreSQL automatically and stores local data under `~/.paperclip/instances/default/`.
 
-## FAQ
+One-command local run:
 
-**What does a typical setup look like?**
-Locally, a single Node.js process manages an embedded Postgres and local file storage. For production, point it at your own Postgres and deploy however you like. Configure projects, agents, and goals — the agents take care of the rest.
+```bash
+pnpm paperclipai run
+```
 
-If you're a solo-entreprenuer you can use Tailscale to access Paperclip on the go. Then later you can deploy to e.g. Vercel when you need it.
+That command auto-onboards a local instance if needed, runs doctor checks, and starts the server.
 
-**Can I run multiple companies?**
-Yes. A single deployment can run an unlimited number of companies with complete data isolation.
+## Recommended Setup For An Engineering Team
 
-**How is Paperclip different from agents like OpenClaw or Claude Code?**
-Paperclip _uses_ those agents. It orchestrates them into a company — with org charts, budgets, goals, governance, and accountability.
+1. Create one company per engineering organization or per clearly separated product team.
+2. Set the company issue prefix to something your team will recognize in the UI and in linked references.
+3. Create agents with explicit operational roles:
+   - one CEO or lead agent for escalation and coordination
+   - one or more engineer agents
+   - one QA agent
+   - optionally one devops / merge agent
+4. Keep normal implementation work in `todo` and let the server route it.
+5. Move completed implementation to `testing`, not directly to `done`.
+6. Use `in_review` for human review, `rework` for requested changes, and `merging` for approved work that still needs integration.
+7. Model dependency chains with `blocks` and `blockedBy` instead of burying blockers in comments.
+8. Use company stop/start controls when you want to pause an entire team without manually pausing each agent.
+9. Use cost checkpoints before and after experiments, large refactors, or review cycles so you can compare spend across intervals.
+10. Use the dummy issue suite in Company Settings when testing routing, QA, review, and dependency behavior.
 
-**Why should I use Paperclip instead of just pointing my OpenClaw to Asana or Trello?**
-Agent orchestration has subtleties in how you coordinate who has work checked out, how to maintain sessions, monitoring costs, establishing governance - Paperclip does this for you.
+## Linear Plugin
 
-(Bring-your-own-ticket-system is on the Roadmap)
+This fork includes a first-party Linear plugin intended for engineering use.
 
-**Do agents run continuously?**
-By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). You can also hook in continuous agents like OpenClaw. You bring your agent and Paperclip coordinates.
+What it syncs:
 
-<br/>
+- issue title
+- description
+- status
+- comments
+- blocking dependencies
+
+What it adds to the UI:
+
+- a plugin settings page
+- a dashboard widget
+- an issue detail tab
+- a company-context page
+
+How to enable it:
+
+1. Open `Settings -> Plugins`.
+2. Enable `Linear Sync`.
+3. Open the plugin settings page.
+4. Add one company mapping for each Paperclip company you want to sync.
+
+Each mapping includes:
+
+- Paperclip company
+- Linear team ID
+- Linear API key
+- sync direction: `pull`, `push`, or `bidirectional`
+- optional comment sync toggle
+- optional auto-import / auto-create toggles
+- optional blocked state name override
+- optional GraphQL URL override
+- optional webhook secret
+
+Important operational details:
+
+- the API key and webhook secret are stored as company secrets; plugin config stores secret references, not raw secret values
+- the default poll job pulls Linear updates on a schedule
+- webhook ingest is optional, but useful if you want faster refresh than polling alone
+- if your Linear workflow has a dedicated blocked state, set `blockedStateName` so blocked work maps cleanly
+
+## Supported Local Adapters
+
+This repo currently includes local or gateway adapters for:
+
+- `claude-local`
+- `codex-local`
+- `cursor-local`
+- `gemini-local`
+- `openclaw-gateway`
+- `opencode-local`
+- `pi-local`
 
 ## Development
 
+Common commands:
+
 ```bash
-pnpm dev              # Full dev (API + UI, watch mode)
-pnpm dev:once         # Full dev without file watching
-pnpm dev:server       # Server only
-pnpm build            # Build all
-pnpm typecheck        # Type checking
-pnpm test:run         # Run tests
-pnpm db:generate      # Generate DB migration
-pnpm db:migrate       # Apply migrations
+pnpm dev
+pnpm dev:once
+pnpm dev:server
+pnpm build
+pnpm typecheck
+pnpm test:run
+pnpm db:generate
+pnpm db:migrate
 ```
 
-See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
+Useful docs:
 
-<br/>
-
-## Roadmap
-
-- ⚪ Get OpenClaw onboarding easier
-- ⚪ Get cloud agents working e.g. Cursor / e2b agents
-- ⚪ ClipMart - buy and sell entire agent companies
-- ⚪ Easy agent configurations / easier to understand
-- ⚪ Better support for harness engineering
-- 🟢 Plugin system (e.g. if you want to add a knowledgebase, custom tracing, queues, etc)
-- ⚪ Better docs
-
-<br/>
+- [doc/DEVELOPING.md](doc/DEVELOPING.md)
+- [doc/DATABASE.md](doc/DATABASE.md)
+- [doc/SPEC-implementation.md](doc/SPEC-implementation.md)
+- [docs/start/quickstart.md](docs/start/quickstart.md)
 
 ## Contributing
 
-We welcome contributions. See the [contributing guide](CONTRIBUTING.md) for details.
-
-<br/>
-
-## Community
-
-- [Discord](https://discord.gg/m4HZY7xNG3) — Join the community
-- [GitHub Issues](https://github.com/paperclipai/paperclip/issues) — bugs and feature requests
-- [GitHub Discussions](https://github.com/paperclipai/paperclip/discussions) — ideas and RFC
-
-<br/>
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT &copy; 2026 Paperclip
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/image?repos=paperclipai/paperclip&type=date&legend=top-left)](https://www.star-history.com/?repos=paperclipai%2Fpaperclip&type=date&legend=top-left)
-
-<br/>
-
----
-
-<p align="center">
-  <img src="doc/assets/footer.jpg" alt="" width="720" />
-</p>
-
-<p align="center">
-  <sub>Open source under MIT. Built for people who want to run companies, not babysit agents.</sub>
-</p>
+MIT
