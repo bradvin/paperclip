@@ -1873,6 +1873,86 @@ export function pluginRoutes(
     }
   });
 
+  /**
+   * POST /api/plugins/:pluginId/jobs/:jobId/pause
+   *
+   * Pause a scheduled plugin job without uninstalling or disabling the plugin.
+   *
+   * Response: PluginJobRecord
+   * Errors:
+   * - 404 if plugin or job not found
+   * - 400 if job scheduling is not enabled
+   */
+  router.post("/plugins/:pluginId/jobs/:jobId/pause", async (req, res) => {
+    assertBoard(req);
+    if (!jobDeps) {
+      res.status(501).json({ error: "Job scheduling is not enabled" });
+      return;
+    }
+
+    const { pluginId, jobId } = req.params;
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const job = await jobDeps.jobStore.getJobByIdForPlugin(plugin.id, jobId);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    try {
+      await jobDeps.jobStore.updateJobStatus(job.id, "paused");
+      const updated = await jobDeps.jobStore.getJobByIdForPlugin(plugin.id, job.id);
+      res.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  /**
+   * POST /api/plugins/:pluginId/jobs/:jobId/resume
+   *
+   * Resume a paused plugin job so the scheduler can run it again.
+   *
+   * Response: PluginJobRecord
+   * Errors:
+   * - 404 if plugin or job not found
+   * - 400 if job scheduling is not enabled
+   */
+  router.post("/plugins/:pluginId/jobs/:jobId/resume", async (req, res) => {
+    assertBoard(req);
+    if (!jobDeps) {
+      res.status(501).json({ error: "Job scheduling is not enabled" });
+      return;
+    }
+
+    const { pluginId, jobId } = req.params;
+    const plugin = await resolvePlugin(registry, pluginId);
+    if (!plugin) {
+      res.status(404).json({ error: "Plugin not found" });
+      return;
+    }
+
+    const job = await jobDeps.jobStore.getJobByIdForPlugin(plugin.id, jobId);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    try {
+      await jobDeps.jobStore.updateJobStatus(job.id, "active");
+      const updated = await jobDeps.jobStore.getJobByIdForPlugin(plugin.id, job.id);
+      res.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: message });
+    }
+  });
+
   // ===========================================================================
   // Webhook ingestion route
   // ===========================================================================

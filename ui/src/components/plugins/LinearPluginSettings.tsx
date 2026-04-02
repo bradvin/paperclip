@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowUpRight, Key, Loader2, Plus, Trash2, Webhook } from "lucide-react";
-import type { CompanySecret } from "@paperclipai/shared";
+import type { CompanySecret, PluginJobRecord } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { pluginsApi } from "@/api/plugins";
@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 
 export const LINEAR_PLUGIN_KEY = "paperclip.linear";
+const LINEAR_POLL_JOB_KEY = "poll-linear";
 
 type LinearSyncDirection = "pull" | "push" | "bidirectional";
 
@@ -56,7 +57,24 @@ interface LinearPluginSettingsProps {
   pluginId: string;
   initialValues?: Record<string, unknown>;
   isLoading?: boolean;
+  pluginStatus?: string;
 }
+
+type LinearCompanySummary = {
+  companyId: string;
+  companyName: string;
+  teamId: string;
+  syncDirection: string;
+  linkedIssues: number;
+  lastSuccessAt: string | null;
+  lastRunAt: string | null;
+  lastError: string | null;
+  lastCursor: string | null;
+};
+
+type LinearOverviewData = {
+  companies: LinearCompanySummary[];
+};
 
 function createEmptyMapping(defaultCompanyId: string | null): LinearMappingFormState {
   return {
@@ -176,10 +194,21 @@ function webhookUrlForPlugin(pluginId: string): string | null {
   return `${window.location.origin}/api/plugins/${pluginId}/webhooks/linear`;
 }
 
+function formatTimestamp(value?: string | Date | null): string {
+  if (!value) return "Never";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    if (typeof value === "string") return value;
+    return value.toISOString();
+  }
+  return date.toLocaleString();
+}
+
 export function LinearPluginSettings({
   pluginId,
   initialValues,
   isLoading,
+  pluginStatus,
 }: LinearPluginSettingsProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -253,6 +282,34 @@ export function LinearPluginSettings({
     [knownCompanyIds, mappings],
   );
   const webhookUrl = useMemo(() => webhookUrlForPlugin(pluginId), [pluginId]);
+  const pluginReady = pluginStatus === "ready";
+
+  const { data: jobsData } = useQuery({
+    queryKey: queryKeys.plugins.jobs(pluginId),
+    queryFn: async () => await pluginsApi.jobs(pluginId),
+    refetchInterval: pluginReady ? 30000 : false,
+  });
+
+  const pollJob = useMemo(
+    () => jobsData?.find((job) => job.jobKey === LINEAR_POLL_JOB_KEY) ?? null,
+    [jobsData],
+  );
+  const syncJobActive = pollJob?.status === "active";
+
+  const { data: overviewData } = useQuery({
+    queryKey: ["plugins", pluginId, "linear-overview", selectedCompanyId ?? "__instance__"],
+    queryFn: async () => {
+      const response = await pluginsApi.bridgeGetData(pluginId, "overview", undefined, selectedCompanyId ?? null);
+      return response.data as LinearOverviewData;
+    },
+    enabled: pluginReady,
+    refetchInterval: pluginReady ? 30000 : false,
+  });
+
+  const overviewByCompanyId = useMemo(
+    () => new Map((overviewData?.companies ?? []).map((company) => [company.companyId, company])),
+    [overviewData],
+  );
 
   const updateMapping = useCallback(
     (index: number, updater: (mapping: LinearMappingFormState) => LinearMappingFormState) => {
@@ -358,6 +415,7 @@ export function LinearPluginSettings({
       setFormMessage({ tone: "success", text: "Linear settings saved." });
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.detail(pluginId) });
+      queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-overview"] });
       touchedCompanyIds.forEach((companyId) => {
         queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
       });
@@ -367,6 +425,61 @@ export function LinearPluginSettings({
       setFormMessage({ tone: "error", text: error.message || "Failed to save Linear settings." });
       pushToast({
         title: "Failed to save Linear settings",
+        body: error.message,
+        tone: "error",
+      });
+    },
+  });
+
+  const resyncMutation = useMutation({
+    mutationFn: async ({ companyId, full }: { companyId: string; full: boolean }) => {
+      const response = await pluginsApi.bridgePerformAction(
+        pluginId,
+        "resync-company",
+        { companyId, full },
+        companyId,
+      );
+      return response.data as { syncedIssues?: number; lastCursor?: string | null };
+    },
+    onSuccess: (result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-overview"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.dashboard(pluginId) });
+      const companyName = companyById.get(variables.companyId)?.name ?? "Company";
+      pushToast({
+        title: variables.full ? "Full Linear resync finished" : "Linear pull finished",
+        body: `${companyName}: ${result.syncedIssues ?? 0} issue${result.syncedIssues === 1 ? "" : "s"} synced.`,
+        tone: "success",
+      });
+    },
+    onError: (error: Error) => {
+      pushToast({
+        title: "Linear sync failed",
+        body: error.message,
+        tone: "error",
+      });
+    },
+  });
+
+  const toggleSyncJobMutation = useMutation({
+    mutationFn: async (job: Pick<PluginJobRecord, "id" | "status">) =>
+      job.status === "active"
+        ? await pluginsApi.pauseJob(pluginId, job.id)
+        : await pluginsApi.resumeJob(pluginId, job.id),
+    onSuccess: (job) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.jobs(pluginId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.dashboard(pluginId) });
+      pushToast({
+        title: job.status === "active" ? "Automatic Linear sync started" : "Automatic Linear sync paused",
+        body:
+          job.status === "active"
+            ? "The scheduled poll job will resume running for all Linear mappings."
+            : "The scheduled poll job is paused until you start it again.",
+        tone: "success",
+      });
+    },
+    onError: (error: Error) => {
+      pushToast({
+        title: "Failed to update Linear sync schedule",
         body: error.message,
         tone: "error",
       });
@@ -400,6 +513,55 @@ export function LinearPluginSettings({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
+          <div className="rounded-lg border border-border/60 bg-background/50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-foreground">Automatic sync schedule</p>
+                <p className="text-xs text-muted-foreground">
+                  Controls the background Linear poll job for every mapped company.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => pollJob && toggleSyncJobMutation.mutate({ id: pollJob.id, status: pollJob.status })}
+                disabled={!pollJob || toggleSyncJobMutation.isPending}
+              >
+                {toggleSyncJobMutation.isPending ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Updating...
+                  </>
+                ) : syncJobActive ? (
+                  "Pause sync"
+                ) : (
+                  "Start sync"
+                )}
+              </Button>
+            </div>
+
+            <div className="mt-3 grid gap-2 text-xs text-muted-foreground md:grid-cols-3">
+              <div>Status: {pollJob ? (syncJobActive ? "Running" : pollJob.status === "paused" ? "Paused" : pollJob.status) : "Unavailable"}</div>
+              <div>Last run: {formatTimestamp(pollJob?.lastRunAt ?? null)}</div>
+              <div>Next run: {formatTimestamp(pollJob?.nextRunAt ?? null)}</div>
+            </div>
+
+            {!pollJob ? (
+              <p className="mt-3 text-xs text-muted-foreground">
+                The Linear poll job is not available yet. Save and enable the plugin if this is a new install.
+              </p>
+            ) : !syncJobActive ? (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Background polling is paused. Manual sync actions below still work.
+              </p>
+            ) : (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Background polling runs every 10 minutes while active.
+              </p>
+            )}
+          </div>
+
           {errors.length > 0 ? (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm">
               <div className="flex items-start gap-3">
@@ -430,6 +592,7 @@ export function LinearPluginSettings({
 
           {mappings.map((mapping, index) => {
             const company = companyById.get(mapping.companyId);
+            const summary = mapping.companyId ? overviewByCompanyId.get(mapping.companyId) ?? null : null;
             const companySecrets = secretsByCompanyId.get(mapping.companyId) ?? [];
             const apiSecret = mapping.apiTokenSecretRef
               ? companySecrets.find((secret) => secret.id === mapping.apiTokenSecretRef) ?? null
@@ -688,6 +851,84 @@ export function LinearPluginSettings({
                       </span>
                     </span>
                   </label>
+                </div>
+
+                <div className="mt-4 rounded-lg border border-border/60 bg-background/50 p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">Manual sync</p>
+                      <p className="text-xs text-muted-foreground">
+                        Use the same pull actions from the Linear page directly here.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => resyncMutation.mutate({ companyId: mapping.companyId, full: false })}
+                        disabled={
+                          saveMutation.isPending ||
+                          resyncMutation.isPending ||
+                          !mapping.companyId ||
+                          !pluginReady ||
+                          isDirty
+                        }
+                      >
+                        {resyncMutation.isPending && resyncMutation.variables?.companyId === mapping.companyId && !resyncMutation.variables?.full ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Pulling...
+                          </>
+                        ) : (
+                          "Pull recent"
+                        )}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => resyncMutation.mutate({ companyId: mapping.companyId, full: true })}
+                        disabled={
+                          saveMutation.isPending ||
+                          resyncMutation.isPending ||
+                          !mapping.companyId ||
+                          !pluginReady ||
+                          isDirty
+                        }
+                      >
+                        {resyncMutation.isPending && resyncMutation.variables?.companyId === mapping.companyId && resyncMutation.variables?.full ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Resyncing...
+                          </>
+                        ) : (
+                          "Full resync"
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
+                    <div>Linked issues: {summary?.linkedIssues ?? 0}</div>
+                    <div>Last success: {formatTimestamp(summary?.lastSuccessAt)}</div>
+                    <div>Last run: {formatTimestamp(summary?.lastRunAt)}</div>
+                    <div>Cursor: {summary?.lastCursor ?? "None"}</div>
+                  </div>
+
+                  {!pluginReady ? (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      Enable the plugin to run manual sync actions.
+                    </p>
+                  ) : isDirty ? (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      Save your settings before running a manual sync so the worker uses the latest mapping.
+                    </p>
+                  ) : null}
+
+                  {summary?.lastError ? (
+                    <p className="mt-3 text-xs text-destructive">{summary.lastError}</p>
+                  ) : null}
                 </div>
               </div>
             );

@@ -282,6 +282,7 @@ export function PluginSettings() {
                   pluginId={pluginId!}
                   initialValues={configData?.configJson}
                   isLoading={configLoading}
+                  pluginStatus={plugin.status}
                 />
               ) : hasCustomSettingsPage ? (
                 <div className="space-y-3">

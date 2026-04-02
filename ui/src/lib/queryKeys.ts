@@ -117,6 +117,7 @@ export const queryKeys = {
     uiContributions: ["plugins", "ui-contributions"] as const,
     config: (pluginId: string) => ["plugins", pluginId, "config"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,
+    jobs: (pluginId: string) => ["plugins", pluginId, "jobs"] as const,
     logs: (pluginId: string) => ["plugins", pluginId, "logs"] as const,
   },
 };

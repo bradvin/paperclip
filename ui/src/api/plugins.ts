@@ -13,6 +13,7 @@
 import type {
   PluginLauncherDeclaration,
   PluginLauncherRenderContextSnapshot,
+  PluginJobRecord,
   PluginUiSlotDeclaration,
   PluginRecord,
   PluginConfig,
@@ -245,6 +246,35 @@ export const pluginsApi = {
    */
   dashboard: (pluginId: string) =>
     api.get<PluginDashboardData>(`/plugins/${pluginId}/dashboard`),
+
+  /**
+   * List scheduled jobs for a plugin.
+   *
+   * @param pluginId - UUID of the plugin.
+   * @param status - Optional filter by job status.
+   */
+  jobs: (pluginId: string, status?: PluginJobRecord["status"]) =>
+    api.get<PluginJobRecord[]>(
+      `/plugins/${pluginId}/jobs${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+    ),
+
+  /**
+   * Pause a scheduled plugin job.
+   *
+   * @param pluginId - UUID of the plugin.
+   * @param jobId - UUID of the job.
+   */
+  pauseJob: (pluginId: string, jobId: string) =>
+    api.post<PluginJobRecord>(`/plugins/${pluginId}/jobs/${jobId}/pause`, {}),
+
+  /**
+   * Resume a scheduled plugin job.
+   *
+   * @param pluginId - UUID of the plugin.
+   * @param jobId - UUID of the job.
+   */
+  resumeJob: (pluginId: string, jobId: string) =>
+    api.post<PluginJobRecord>(`/plugins/${pluginId}/jobs/${jobId}/resume`, {}),
 
   /**
    * Fetch recent log entries for a plugin.
