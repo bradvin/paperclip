@@ -5,7 +5,9 @@ import {
   assets,
   companies,
   companyMemberships,
+  costEvents,
   documents,
+  financeEvents,
   goals,
   heartbeatRuns,
   executionWorkspaces,
@@ -1365,6 +1367,24 @@ export function issueService(db: Db) {
           .select({ documentId: issueDocuments.documentId })
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
+
+        await tx
+          .update(issues)
+          .set({ parentId: null, updatedAt: new Date() })
+          .where(eq(issues.parentId, id));
+
+        await tx
+          .update(costEvents)
+          .set({ issueId: null })
+          .where(eq(costEvents.issueId, id));
+
+        await tx
+          .update(financeEvents)
+          .set({ issueId: null })
+          .where(eq(financeEvents.issueId, id));
+
+        await tx.delete(issueReadStates).where(eq(issueReadStates.issueId, id));
+        await tx.delete(issueComments).where(eq(issueComments.issueId, id));
 
         const removedIssue = await tx
           .delete(issues)

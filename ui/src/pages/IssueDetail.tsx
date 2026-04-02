@@ -200,7 +200,8 @@ export function IssueDetail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { pushToast } = useToast();
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
+  const [desktopMoreOpen, setDesktopMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("comments");
@@ -442,6 +443,20 @@ export function IssueDetail() {
     };
   }, [linkedRuns]);
 
+  const invalidateIssueCollections = (companyId: string | null | undefined, projectId: string | null | undefined) => {
+    if (!companyId) return;
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.companies.stats });
+    if (projectId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
+    }
+  };
+
   const invalidateIssue = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
@@ -451,12 +466,7 @@ export function IssueDetail() {
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
-    if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
-    }
+    invalidateIssueCollections(issue?.companyId ?? selectedCompanyId, issue?.projectId ?? null);
   };
 
   const markIssueRead = useMutation({
@@ -474,6 +484,38 @@ export function IssueDetail() {
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onSuccess: () => {
       invalidateIssue();
+    },
+  });
+
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: (removedIssue) => {
+      setMobileMoreOpen(false);
+      setDesktopMoreOpen(false);
+      setMobilePropsOpen(false);
+      closePanel();
+      queryClient.removeQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.runs(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.approvals(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.documents(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.liveRuns(issueId!) });
+      queryClient.removeQueries({ queryKey: queryKeys.issues.activeRun(issueId!) });
+      invalidateIssueCollections(removedIssue.companyId, removedIssue.projectId ?? null);
+      pushToast({
+        title: `Deleted ${removedIssue.identifier ?? "issue"}`,
+        tone: "success",
+      });
+      navigate(sourceBreadcrumb.href ?? "/issues");
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to delete issue",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
     },
   });
 
@@ -670,6 +712,63 @@ export function IssueDetail() {
     </>
   );
 
+  const handleHideIssue = () => {
+    updateIssue.mutate(
+      { hiddenAt: new Date().toISOString() },
+      {
+        onSuccess: () => {
+          setMobileMoreOpen(false);
+          setDesktopMoreOpen(false);
+          navigate("/issues/all");
+        },
+      },
+    );
+  };
+
+  const handleDeleteIssue = () => {
+    const identifier = issue.identifier ?? issue.id.slice(0, 8);
+    const childIssueNote =
+      childIssues.length > 0
+        ? `\n\n${childIssues.length} sub-issue${childIssues.length === 1 ? "" : "s"} will be kept and detached from this issue.`
+        : "";
+    const confirmed = window.confirm(
+      `Delete issue ${identifier}?\n\n${issue.title}${childIssueNote}\n\nThis permanently deletes the issue and cannot be undone.`,
+    );
+    if (!confirmed) return;
+    deleteIssue.mutate();
+  };
+
+  const renderIssueActionsMenu = (
+    open: boolean,
+    onOpenChange: (open: boolean) => void,
+  ) => (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="icon-xs" className="shrink-0" title="More actions">
+          <MoreHorizontal className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-48 p-1" align="end">
+        <button
+          className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 disabled:opacity-50 disabled:pointer-events-none"
+          onClick={handleHideIssue}
+          disabled={Boolean(issue.hiddenAt) || updateIssue.isPending || deleteIssue.isPending}
+        >
+          <EyeOff className="h-3 w-3" />
+          {issue.hiddenAt ? "Issue hidden" : "Hide this issue"}
+        </button>
+        <button
+          className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive disabled:opacity-50 disabled:pointer-events-none"
+          onClick={handleDeleteIssue}
+          disabled={updateIssue.isPending || deleteIssue.isPending}
+        >
+          <Trash2 className="h-3 w-3" />
+          {deleteIssue.isPending ? "Deleting..." : "Delete this issue"}
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+
   return (
     <div className="max-w-2xl space-y-6">
       {/* Parent chain breadcrumb */}
@@ -775,6 +874,7 @@ export function IssueDetail() {
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
+            {renderIssueActionsMenu(mobileMoreOpen, setMobileMoreOpen)}
           </div>
 
           <div className="hidden md:flex items-center md:ml-auto shrink-0">
@@ -798,29 +898,7 @@ export function IssueDetail() {
             >
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
-
-            <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-              <PopoverTrigger asChild>
-                <Button variant="ghost" size="icon-xs" className="shrink-0">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="end">
-              <button
-                className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
-                onClick={() => {
-                  updateIssue.mutate(
-                    { hiddenAt: new Date().toISOString() },
-                    { onSuccess: () => navigate("/issues/all") },
-                  );
-                  setMoreOpen(false);
-                }}
-              >
-                <EyeOff className="h-3 w-3" />
-                Hide this Issue
-              </button>
-            </PopoverContent>
-            </Popover>
+            {renderIssueActionsMenu(desktopMoreOpen, setDesktopMoreOpen)}
           </div>
         </div>
 
