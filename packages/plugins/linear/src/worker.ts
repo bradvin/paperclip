@@ -39,6 +39,18 @@ import type {
 
 let currentContext: PluginContext | null = null;
 const workflowStateCache = new Map<string, LinearWorkflowState[]>();
+const ISSUE_STATUS_TRANSITIONS: Record<Issue["status"], Issue["status"][]> = {
+  backlog: ["todo", "cancelled"],
+  todo: ["in_progress", "blocked", "cancelled"],
+  in_progress: ["testing", "in_review", "rework", "merging", "blocked", "done", "cancelled"],
+  testing: ["in_progress", "in_review", "rework", "blocked", "cancelled"],
+  in_review: ["rework", "merging", "done", "cancelled"],
+  rework: ["in_progress", "blocked", "cancelled"],
+  merging: ["in_progress", "blocked", "done", "cancelled"],
+  blocked: ["todo", "testing", "rework", "merging", "in_progress", "cancelled"],
+  done: ["todo"],
+  cancelled: ["todo"],
+};
 
 function summarizeError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -95,6 +107,10 @@ function isActiveLinkRecord(entity: PluginEntityRecord): boolean {
   return !data?.unlinkedAt;
 }
 
+function sortNewestFirst<T extends { updatedAt: string }>(records: T[]): T[] {
+  return [...records].sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+}
+
 async function listIssueLinks(ctx: PluginContext): Promise<Array<PluginEntityRecord & { data: LinearIssueLinkData }>> {
   const records = await ctx.entities.list({ entityType: ENTITY_TYPES.issueLink, limit: 5000 });
   return records
@@ -108,12 +124,11 @@ async function listCommentLinksForIssue(
 ): Promise<Array<PluginEntityRecord & { data: LinearCommentLinkData }>> {
   const records = await ctx.entities.list({
     entityType: ENTITY_TYPES.commentLink,
-    scopeKind: "issue",
-    scopeId: issueId,
     limit: 5000,
   });
   return records
     .filter(isActiveLinkRecord)
+    .filter((record) => record.scopeKind === "issue" && record.scopeId === issueId)
     .map((record) => ({ ...record, data: parseEntityData<LinearCommentLinkData>(record) }));
 }
 
@@ -121,22 +136,35 @@ async function getIssueLinkByLocalIssueId(
   ctx: PluginContext,
   issueId: string,
 ): Promise<(PluginEntityRecord & { data: LinearIssueLinkData }) | null> {
-  const records = await ctx.entities.list({
-    entityType: ENTITY_TYPES.issueLink,
-    scopeKind: "issue",
-    scopeId: issueId,
-    limit: 10,
-  });
-  const record = records.find(isActiveLinkRecord);
-  return record ? { ...record, data: parseEntityData<LinearIssueLinkData>(record) } : null;
+  const records = await listIssueLinks(ctx);
+  const record = sortNewestFirst(
+    records.filter((entry) => entry.scopeKind === "issue" && entry.scopeId === issueId),
+  )[0];
+  return record ?? null;
 }
 
 async function getIssueLinkByLinearIssueId(
   ctx: PluginContext,
   linearIssueId: string,
 ): Promise<(PluginEntityRecord & { data: LinearIssueLinkData }) | null> {
+  const byExternalId = await ctx.entities.list({
+    entityType: ENTITY_TYPES.issueLink,
+    externalId: linearIssueId,
+    limit: 10,
+  });
+  const matchingExternalRecord = sortNewestFirst(
+    byExternalId
+      .filter(isActiveLinkRecord)
+      .map((record) => ({ ...record, data: parseEntityData<LinearIssueLinkData>(record) }))
+      .filter((record) => record.data.linearIssueId === linearIssueId || record.externalId === linearIssueId),
+  )[0];
+  if (matchingExternalRecord) {
+    return matchingExternalRecord;
+  }
   const records = await listIssueLinks(ctx);
-  const record = records.find((entry) => entry.data.linearIssueId === linearIssueId);
+  const record = sortNewestFirst(
+    records.filter((entry) => entry.data.linearIssueId === linearIssueId),
+  )[0];
   return record ?? null;
 }
 
@@ -144,12 +172,35 @@ async function upsertIssueLink(
   ctx: PluginContext,
   input: LinearIssueLinkData,
 ): Promise<PluginEntityRecord & { data: LinearIssueLinkData }> {
-  const existing = await getIssueLinkByLocalIssueId(ctx, input.paperclipIssueId);
+  const existingByRemote = await getIssueLinkByLinearIssueId(ctx, input.linearIssueId);
+  const existingByLocal = await getIssueLinkByLocalIssueId(ctx, input.paperclipIssueId);
+
+  if (
+    !input.unlinkedAt &&
+    existingByLocal &&
+    existingByLocal.data.linearIssueId !== input.linearIssueId
+  ) {
+    const retiredAt = input.lastSyncedAt ?? nowIso();
+    await ctx.entities.upsert({
+      entityType: ENTITY_TYPES.issueLink,
+      scopeKind: "issue",
+      scopeId: existingByLocal.data.paperclipIssueId,
+      externalId: existingByLocal.externalId ?? existingByLocal.data.linearIssueId,
+      title: existingByLocal.data.linearIdentifier,
+      status: "unlinked",
+      data: {
+        ...existingByLocal.data,
+        lastSyncedAt: retiredAt,
+        unlinkedAt: retiredAt,
+      },
+    });
+  }
+
   const record = await ctx.entities.upsert({
     entityType: ENTITY_TYPES.issueLink,
     scopeKind: "issue",
     scopeId: input.paperclipIssueId,
-    externalId: existing?.externalId ?? input.linearIssueId,
+    externalId: existingByRemote?.externalId ?? input.linearIssueId,
     title: input.linearIdentifier,
     status: input.unlinkedAt ? "unlinked" : "linked",
     data: input,
@@ -272,6 +323,81 @@ function mapLinearStateToPaperclipStatus(remote: LinearIssue): Issue["status"] {
   if (stateType === "backlog") return "backlog";
   if (stateType === "unstarted") return "todo";
   return "in_progress";
+}
+
+function hasLocalAssignee(issue: Pick<Issue, "assigneeAgentId" | "assigneeUserId"> | null | undefined): boolean {
+  return Boolean(issue?.assigneeAgentId || issue?.assigneeUserId);
+}
+
+function normalizeDesiredPullStatus(
+  currentIssue: Pick<Issue, "status" | "assigneeAgentId" | "assigneeUserId"> | null,
+  desiredStatus: Issue["status"],
+  opts?: { forCreate?: boolean },
+): Issue["status"] {
+  if (desiredStatus === "in_progress" && !hasLocalAssignee(currentIssue)) {
+    return "todo";
+  }
+  if (!opts?.forCreate && desiredStatus === "backlog" && currentIssue && currentIssue.status !== "backlog") {
+    return "todo";
+  }
+  return desiredStatus;
+}
+
+function findStatusTransitionPath(
+  from: Issue["status"],
+  to: Issue["status"],
+  issue: Pick<Issue, "assigneeAgentId" | "assigneeUserId">,
+): Issue["status"][] | null {
+  if (from === to) return [from];
+
+  const queue: Array<{ status: Issue["status"]; path: Issue["status"][] }> = [{ status: from, path: [from] }];
+  const visited = new Set<Issue["status"]>([from]);
+  const allowInProgress = hasLocalAssignee(issue);
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) break;
+
+    for (const next of ISSUE_STATUS_TRANSITIONS[current.status] ?? []) {
+      if (!allowInProgress && next === "in_progress") continue;
+      if (visited.has(next)) continue;
+      const path = [...current.path, next];
+      if (next === to) return path;
+      visited.add(next);
+      queue.push({ status: next, path });
+    }
+  }
+
+  return null;
+}
+
+async function applyPulledStatusToIssue(
+  ctx: PluginContext,
+  mapping: CompanyMappingConfig,
+  issue: Issue,
+  desiredStatus: Issue["status"],
+  remoteIssue: LinearIssue,
+): Promise<Issue> {
+  const path = findStatusTransitionPath(issue.status, desiredStatus, issue);
+  if (!path) {
+    if (issue.status !== desiredStatus) {
+      ctx.logger.warn("Linear pull kept local issue status because no valid workflow path exists", {
+        companyId: mapping.companyId,
+        issueId: issue.id,
+        linearIssueId: remoteIssue.id,
+        linearIdentifier: remoteIssue.identifier,
+        currentStatus: issue.status,
+        desiredStatus,
+      });
+    }
+    return issue;
+  }
+
+  let current = issue;
+  for (const nextStatus of path.slice(1)) {
+    current = await ctx.issues.update(current.id, { status: nextStatus }, mapping.companyId);
+  }
+  return current;
 }
 
 async function getWorkflowStatesForMapping(
@@ -442,22 +568,26 @@ async function syncRemoteIssueToPaperclip(
     if (!mapping.importLinearIssues) {
       throw new Error(`Linear issue ${remoteIssue.identifier} is not linked and imports are disabled`);
     }
+    const desiredStatus = normalizeDesiredPullStatus(null, mapLinearStateToPaperclipStatus(remoteIssue), {
+      forCreate: true,
+    });
     issue = await ctx.issues.create({
       companyId: mapping.companyId,
       title: remoteIssue.title,
       description: remoteIssue.description ?? undefined,
+      status: desiredStatus,
       priority: mapLinearPriorityToPaperclip(remoteIssue.priority),
     });
   }
 
   await markSuppressWindow(ctx, issue.id, "issue-suppress-until", 5000);
-  const desiredStatus = mapLinearStateToPaperclipStatus(remoteIssue);
-  const updated = await ctx.issues.update(issue.id, {
+  const updatedFields = await ctx.issues.update(issue.id, {
     title: remoteIssue.title,
     description: remoteIssue.description ?? null,
-    status: desiredStatus,
     priority: mapLinearPriorityToPaperclip(remoteIssue.priority),
   }, mapping.companyId);
+  const desiredStatus = normalizeDesiredPullStatus(updatedFields, mapLinearStateToPaperclipStatus(remoteIssue));
+  const updated = await applyPulledStatusToIssue(ctx, mapping, updatedFields, desiredStatus, remoteIssue);
 
   await upsertIssueLink(ctx, {
     companyId: mapping.companyId,

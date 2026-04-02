@@ -155,6 +155,66 @@ function createRemoteIssue(overrides: Partial<LinearIssueResponse> & Pick<Linear
   };
 }
 
+function installHostLikeEntityStore(harness: ReturnType<typeof createTestHarness>) {
+  let nextId = 1;
+  const records = new Map<string, {
+    id: string;
+    entityType: string;
+    scopeKind: string;
+    scopeId: string | null;
+    externalId: string | null;
+    title: string | null;
+    status: string | null;
+    data: Record<string, unknown>;
+    createdAt: string;
+    updatedAt: string;
+  }>();
+
+  harness.ctx.entities = {
+    async upsert(input) {
+      const existing = [...records.values()].find((record) => (
+        record.entityType === input.entityType &&
+        record.externalId === (input.externalId ?? null)
+      ));
+      const now = NOW.toISOString();
+      const record = existing
+        ? {
+          ...existing,
+          entityType: input.entityType,
+          scopeKind: input.scopeKind,
+          scopeId: input.scopeId ?? null,
+          externalId: input.externalId ?? null,
+          title: input.title ?? null,
+          status: input.status ?? null,
+          data: input.data,
+          updatedAt: now,
+        }
+        : {
+          id: `entity_${nextId++}`,
+          entityType: input.entityType,
+          scopeKind: input.scopeKind,
+          scopeId: input.scopeId ?? null,
+          externalId: input.externalId ?? null,
+          title: input.title ?? null,
+          status: input.status ?? null,
+          data: input.data,
+          createdAt: now,
+          updatedAt: now,
+        };
+      records.set(record.id, record);
+      return record;
+    },
+    async list(query) {
+      let out = [...records.values()];
+      if (query.entityType) out = out.filter((record) => record.entityType === query.entityType);
+      if (query.externalId) out = out.filter((record) => record.externalId === query.externalId);
+      if (query.offset) out = out.slice(query.offset);
+      if (query.limit) out = out.slice(0, query.limit);
+      return out;
+    },
+  };
+}
+
 describe("Linear plugin", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -252,6 +312,7 @@ describe("Linear plugin", () => {
       const query = request.query;
 
       if (query.includes("workflowStates")) {
+        expect(query).toContain("query LinearWorkflowStates($teamId: ID!)");
         return Response.json({
           data: {
             workflowStates: {
@@ -355,7 +416,7 @@ describe("Linear plugin", () => {
     await plugin.definition.setup(harness.ctx);
     harness.seed({
       companies: [createCompany()],
-      issues: [createIssue({ id: "iss_source", companyId: "co_1", title: "Existing source issue" })],
+      issues: [createIssue({ id: "iss_source", companyId: "co_1", title: "Existing source issue", status: "backlog" })],
     });
 
     const remoteBlockingIssue = createRemoteIssue({
@@ -400,6 +461,7 @@ describe("Linear plugin", () => {
       const id = String(request.variables?.id ?? "");
 
       if (request.query.includes("query LinearIssueByNumber")) {
+        expect(request.query).toContain("query LinearIssueByNumber($teamId: ID!, $number: Float!)");
         return Response.json({
           data: {
             issues: {
@@ -439,5 +501,342 @@ describe("Linear plugin", () => {
     const importedTarget = importedTargetId ? await harness.ctx.issues.get(importedTargetId, "co_1") : null;
     expect(importedTarget?.title).toBe("Imported target issue");
     expect(importedTarget?.blockedBy?.[0]?.id).toBe("iss_source");
+  });
+
+  it("creates completed Linear issues directly as done during pull", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+    });
+
+    const remoteIssue = createRemoteIssue({
+      id: "linear_done",
+      identifier: "ACME-301",
+      title: "Imported done issue",
+      state: {
+        id: "state_done",
+        name: "Done",
+        type: "completed",
+      },
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [remoteIssue],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    const imported = await harness.ctx.issues.list({ companyId: "co_1" });
+    expect(imported).toHaveLength(1);
+    expect(imported[0]?.status).toBe("done");
+  });
+
+  it("caches the resolved Linear credential across multiple API calls in one sync flow", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear.auth-cache",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    const originalResolve = harness.ctx.secrets.resolve.bind(harness.ctx.secrets);
+    const resolveSpy = vi.fn(async (secretRef: string) => await originalResolve(secretRef));
+    harness.ctx.secrets.resolve = resolveSpy;
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [createIssue({ id: "iss_source", companyId: "co_1", title: "Existing source issue", status: "backlog" })],
+    });
+    const remoteBlockingIssue = createRemoteIssue({
+      id: "linear_source",
+      identifier: "ACME-401",
+      title: "Existing source issue",
+      state: {
+        id: "state_blocked",
+        name: "Blocked",
+        type: "started",
+      },
+      relations: {
+        nodes: [
+          {
+            id: "rel_blocks",
+            type: "blocks",
+            relatedIssue: {
+              id: "linear_target",
+              identifier: "ACME-402",
+              title: "Imported target issue",
+              url: "https://linear.app/acme/issue/ACME-402/imported-target-issue",
+            },
+          },
+        ],
+      },
+    });
+    const remoteTargetIssue = createRemoteIssue({
+      id: "linear_target",
+      identifier: "ACME-402",
+      title: "Imported target issue",
+      state: {
+        id: "state_unstarted",
+        name: "Todo",
+        type: "unstarted",
+      },
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      const id = String(request.variables?.id ?? "");
+
+      if (request.query.includes("query LinearIssueByNumber")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [remoteBlockingIssue],
+            },
+          },
+        });
+      }
+
+      if (request.query.includes("query LinearIssue($id: String!)")) {
+        if (id === "linear_source") {
+          return Response.json({ data: { issue: remoteBlockingIssue } });
+        }
+        if (id === "linear_target") {
+          return Response.json({ data: { issue: remoteTargetIssue } });
+        }
+      }
+
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await harness.performAction("link-linear-issue", {
+      companyId: "co_1",
+      issueId: "iss_source",
+      linearIssueRef: "ACME-401",
+    });
+
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+    expect(resolveSpy).toHaveBeenCalledWith("secret.linear.auth-cache");
+  });
+
+  it("imports started Linear issues as todo when no local assignee exists", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+    });
+
+    const remoteIssue = createRemoteIssue({
+      id: "linear_started",
+      identifier: "ACME-302",
+      title: "Imported started issue",
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [remoteIssue],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    const imported = await harness.ctx.issues.list({ companyId: "co_1" });
+    expect(imported).toHaveLength(1);
+    expect(imported[0]?.status).toBe("todo");
+  });
+
+  it("uses an ID-typed team variable and omits updatedAt when doing the first pull", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      expect(request.query).toContain("query LinearIssues($teamId: ID!, $after: String)");
+      expect(request.query).not.toContain("$updatedAt: DateTimeOrDuration");
+      expect(request.query).not.toContain("updatedAt: { gte: $updatedAt }");
+      expect(request.variables).toMatchObject({
+        teamId: "team_1",
+        after: null,
+      });
+      return Response.json({
+        data: {
+          issues: {
+            nodes: [],
+            pageInfo: {
+              hasNextPage: false,
+              endCursor: null,
+            },
+          },
+        },
+      });
+    }));
+
+    await expect(harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: false,
+    })).resolves.toMatchObject({
+      syncedIssues: 0,
+      lastCursor: null,
+    });
+  });
+
+  it("does not create duplicate Paperclip issues on repeated pull syncs when entity scope filters are unavailable", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    installHostLikeEntityStore(harness);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+    });
+
+    const remoteIssues = [
+      createRemoteIssue({
+        id: "linear_dup_1",
+        identifier: "ACME-501",
+        title: "Imported issue one",
+        updatedAt: "2026-03-20T10:00:00.000Z",
+      }),
+      createRemoteIssue({
+        id: "linear_dup_2",
+        identifier: "ACME-502",
+        title: "Imported issue two",
+        updatedAt: "2026-03-20T10:01:00.000Z",
+      }),
+    ];
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: remoteIssues,
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+    await harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    const imported = await harness.ctx.issues.list({ companyId: "co_1" });
+    expect(imported).toHaveLength(2);
+    expect(imported.map((issue) => issue.title).sort()).toEqual([
+      "Imported issue one",
+      "Imported issue two",
+    ]);
+
+    const overview = await harness.getData<{
+      linkedIssueCount: number;
+      companies: Array<{ companyId: string; linkedIssues: number }>;
+    }>("overview", {
+      companyId: "co_1",
+    });
+    expect(overview.linkedIssueCount).toBe(2);
+    expect(overview.companies.find((company) => company.companyId === "co_1")?.linkedIssues).toBe(2);
   });
 });

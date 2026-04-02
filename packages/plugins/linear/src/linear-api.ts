@@ -33,6 +33,9 @@ type WorkflowStateResponse = {
   };
 };
 
+const AUTH_HEADER_CACHE_TTL_MS = 60_000;
+const authHeaderCache = new Map<string, { value: string; expiresAt: number }>();
+
 const ISSUE_SELECTION = `
   id
   identifier
@@ -91,8 +94,19 @@ const ISSUE_SELECTION = `
 `;
 
 async function getAuthHeader(ctx: PluginContext, mapping: CompanyMappingConfig): Promise<string> {
+  const cacheKey = mapping.apiTokenSecretRef;
+  const cached = authHeaderCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
   const raw = (await ctx.secrets.resolve(mapping.apiTokenSecretRef)).trim();
   if (!raw) throw new Error(`Resolved Linear credential is empty for ${mapping.apiTokenSecretRef}`);
+  authHeaderCache.set(cacheKey, {
+    value: raw,
+    expiresAt: now + AUTH_HEADER_CACHE_TTL_MS,
+  });
   return raw;
 }
 
@@ -161,7 +175,7 @@ export async function getLinearIssueByRef(
     const data = await linearGraphql<IssueByNumberResponse>(
       ctx,
       mapping,
-      `query LinearIssueByNumber($teamId: String!, $number: Float!) {
+      `query LinearIssueByNumber($teamId: ID!, $number: Float!) {
         issues(
           first: 1
           filter: {
@@ -195,12 +209,9 @@ export async function listLinearIssuesUpdatedSince(
 ): Promise<LinearIssue[]> {
   const issues: LinearIssue[] = [];
   let after: string | null = null;
-
-  do {
-    const response: IssueConnectionResponse = await linearGraphql<IssueConnectionResponse>(
-      ctx,
-      mapping,
-      `query LinearIssues($teamId: String!, $updatedAt: DateTimeOrDuration, $after: String) {
+  const hasCursor = Boolean(cursor);
+  const query = hasCursor
+    ? `query LinearIssues($teamId: ID!, $updatedAt: DateTimeOrDuration, $after: String) {
         issues(
           first: 50
           after: $after
@@ -218,12 +229,41 @@ export async function listLinearIssuesUpdatedSince(
             endCursor
           }
         }
-      }`,
-      {
-        teamId: mapping.teamId,
-        updatedAt: cursor || null,
-        after,
-      },
+      }`
+    : `query LinearIssues($teamId: ID!, $after: String) {
+        issues(
+          first: 50
+          after: $after
+          orderBy: updatedAt
+          filter: {
+            team: { id: { eq: $teamId } }
+          }
+        ) {
+          nodes {
+            ${ISSUE_SELECTION}
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }`;
+
+  do {
+    const response: IssueConnectionResponse = await linearGraphql<IssueConnectionResponse>(
+      ctx,
+      mapping,
+      query,
+      hasCursor
+        ? {
+            teamId: mapping.teamId,
+            updatedAt: cursor,
+            after,
+          }
+        : {
+            teamId: mapping.teamId,
+            after,
+          },
     );
 
     issues.push(...response.issues.nodes);
@@ -240,7 +280,7 @@ export async function listWorkflowStates(
   const data = await linearGraphql<WorkflowStateResponse>(
     ctx,
     mapping,
-    `query LinearWorkflowStates($teamId: String!) {
+    `query LinearWorkflowStates($teamId: ID!) {
       workflowStates(first: 100, filter: { team: { id: { eq: $teamId } } }) {
         nodes {
           id
