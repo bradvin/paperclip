@@ -44,6 +44,7 @@ type PluginConfigData = {
     statusMappings?: Array<{
       linearStateId: string;
       paperclipStatus: string;
+      syncMode?: string;
     }>;
     graphqlUrl?: string;
     webhookSecretRef?: string;

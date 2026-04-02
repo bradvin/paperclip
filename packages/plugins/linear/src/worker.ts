@@ -36,6 +36,7 @@ import type {
   LinearIssueLinkData,
   LinearPluginConfig,
   LinearStatusMapping,
+  LinearStatusSyncMode,
   LinearWorkflowState,
   SyncCheckpoint,
 } from "./types.js";
@@ -86,6 +87,20 @@ function isPullEnabled(mapping: CompanyMappingConfig): boolean {
   return mapping.syncDirection === "pull" || mapping.syncDirection === "bidirectional" || !mapping.syncDirection;
 }
 
+function normalizeStatusSyncMode(value: unknown): LinearStatusSyncMode {
+  return value === "pull" || value === "push" || value === "disabled" || value === "bidirectional"
+    ? value
+    : "bidirectional";
+}
+
+function isStatusMappingPullEnabled(mapping: Pick<LinearStatusMapping, "syncMode">): boolean {
+  return mapping.syncMode === "pull" || mapping.syncMode === "bidirectional" || !mapping.syncMode;
+}
+
+function isStatusMappingPushEnabled(mapping: Pick<LinearStatusMapping, "syncMode">): boolean {
+  return mapping.syncMode === "push" || mapping.syncMode === "bidirectional" || !mapping.syncMode;
+}
+
 function parseStoredMappings(config: Record<string, unknown> | null | undefined): StoredCompanyMapping[] {
   const rawMappings = Array.isArray(config?.companyMappings) ? config.companyMappings : [];
   return rawMappings
@@ -107,6 +122,7 @@ function parseStoredMappings(config: Record<string, unknown> | null | undefined)
               .map((mapping) => ({
                 linearStateId: String(mapping.linearStateId ?? "").trim(),
                 paperclipStatus: String(mapping.paperclipStatus ?? "").trim() as Issue["status"],
+                syncMode: normalizeStatusSyncMode(mapping.syncMode),
               }))
               .filter((mapping) => mapping.linearStateId && Boolean(mapping.paperclipStatus))
           : undefined,
@@ -351,17 +367,59 @@ function mapLinearPriorityToPaperclip(priority: number | null | undefined): Issu
   return "medium";
 }
 
+function normalizeWorkflowStatusToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+const SUGGESTED_STATUS_ALIASES: Array<[Issue["status"], string[]]> = [
+  ["backlog", ["backlog"]],
+  ["todo", ["todo", "to do", "unstarted"]],
+  ["in_progress", ["inprogress", "in progress", "started", "doing"]],
+  ["testing", ["testing", "qa", "quality assurance"]],
+  ["in_review", ["inreview", "in review", "review", "code review"]],
+  ["rework", ["rework", "needs rework"]],
+  ["merging", ["merging", "merge", "ready to merge"]],
+  ["done", ["done", "complete", "completed"]],
+  ["blocked", ["blocked", "blocking"]],
+  ["cancelled", ["cancelled", "canceled"]],
+];
+
+const SUGGESTED_STATUS_BY_TOKEN = new Map<string, Issue["status"]>(
+  SUGGESTED_STATUS_ALIASES.flatMap(([status, aliases]) =>
+    aliases.map((alias) => [normalizeWorkflowStatusToken(alias), status] as const),
+  ),
+);
+const ISSUE_STATUS_ORDER = new Map(ISSUE_STATUSES.map((status, index) => [status, index] as const));
+
 function inferSuggestedPaperclipStatusForLinearState(
   state: Pick<LinearWorkflowState, "name" | "type">,
 ): Issue["status"] {
   const stateType = state.type.toLowerCase();
-  const stateName = state.name.toLowerCase();
+  const stateNameToken = normalizeWorkflowStatusToken(state.name);
+  const exactStatusMatch = SUGGESTED_STATUS_BY_TOKEN.get(stateNameToken);
+  if (exactStatusMatch) return exactStatusMatch;
   if (stateType === "completed") return "done";
   if (stateType === "canceled") return "cancelled";
-  if (stateName.includes("block")) return "blocked";
+  if (stateNameToken.includes("block")) return "blocked";
   if (stateType === "backlog") return "backlog";
   if (stateType === "unstarted") return "todo";
   return "in_progress";
+}
+
+function sortWorkflowStatesForDisplay(
+  states: LinearWorkflowState[],
+): Array<LinearWorkflowState & { recommendedPaperclipStatus: Issue["status"] }> {
+  return states
+    .map((state) => ({
+      ...state,
+      recommendedPaperclipStatus: inferSuggestedPaperclipStatusForLinearState(state),
+    }))
+    .sort((left, right) => {
+      const leftRank = ISSUE_STATUS_ORDER.get(left.recommendedPaperclipStatus) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = ISSUE_STATUS_ORDER.get(right.recommendedPaperclipStatus) ?? Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return left.name.localeCompare(right.name);
+    });
 }
 
 function hasExplicitStatusMappings(mapping: Pick<CompanyMappingConfig, "statusMappings">): boolean {
@@ -373,7 +431,9 @@ function getConfiguredPaperclipStatusForLinearState(
   linearStateId: string,
 ): Issue["status"] | null {
   if (!hasExplicitStatusMappings(mapping)) return null;
-  return mapping.statusMappings?.find((entry) => entry.linearStateId === linearStateId)?.paperclipStatus ?? null;
+  return mapping.statusMappings?.find(
+    (entry) => entry.linearStateId === linearStateId && isStatusMappingPullEnabled(entry),
+  )?.paperclipStatus ?? null;
 }
 
 function mapLinearStateToPaperclipStatus(
@@ -485,11 +545,14 @@ function pickWorkflowStateId(
 ): string | undefined {
   if (hasExplicitStatusMappings(mapping)) {
     const configuredStateId = mapping.statusMappings
-      ?.find((entry) => entry.paperclipStatus === issue.status && states.some((state) => state.id === entry.linearStateId))
+      ?.find(
+        (entry) =>
+          entry.paperclipStatus === issue.status &&
+          isStatusMappingPushEnabled(entry) &&
+          states.some((state) => state.id === entry.linearStateId),
+      )
       ?.linearStateId;
-    if (configuredStateId) {
-      return configuredStateId;
-    }
+    return configuredStateId;
   }
   if (issue.status === "blocked" && mapping.blockedStateName) {
     const explicit = states.find((entry) => entry.name.toLowerCase() === mapping.blockedStateName!.toLowerCase());
@@ -1106,10 +1169,7 @@ const plugin = definePlugin({
       return {
         companyId,
         teamId,
-        states: states.map((state) => ({
-          ...state,
-          recommendedPaperclipStatus: inferSuggestedPaperclipStatusForLinearState(state),
-        })),
+        states: sortWorkflowStatesForDisplay(states),
       };
     });
 
@@ -1227,6 +1287,7 @@ const plugin = definePlugin({
         errors.push(`Invalid sync direction for ${mapping.companyId}`);
       }
       const seenLinearStates = new Set<string>();
+      const seenPushStatuses = new Set<Issue["status"]>();
       for (const statusMapping of mapping.statusMappings ?? []) {
         if (seenLinearStates.has(statusMapping.linearStateId)) {
           errors.push(`Duplicate Linear workflow state mapping for ${mapping.companyId}:${statusMapping.linearStateId}`);
@@ -1234,6 +1295,14 @@ const plugin = definePlugin({
         seenLinearStates.add(statusMapping.linearStateId);
         if (!ISSUE_STATUSES.includes(statusMapping.paperclipStatus)) {
           errors.push(`Invalid Paperclip status mapping for ${mapping.companyId}:${statusMapping.linearStateId}`);
+        }
+        if (isStatusMappingPushEnabled(statusMapping)) {
+          if (seenPushStatuses.has(statusMapping.paperclipStatus)) {
+            errors.push(
+              `Duplicate push target for ${mapping.companyId}:${statusMapping.paperclipStatus}`,
+            );
+          }
+          seenPushStatuses.add(statusMapping.paperclipStatus);
         }
       }
     }

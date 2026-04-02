@@ -28,6 +28,7 @@ import type { Db } from "@paperclipai/db";
 import { companies, pluginLogs, pluginWebhookDeliveries } from "@paperclipai/db";
 import type {
   PluginStatus,
+  PluginRecord,
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
   PluginLauncherRenderContextSnapshot,
@@ -198,6 +199,46 @@ async function resolvePlugin(
   }
 
   return registry.getByKey(pluginId);
+}
+
+async function refreshLocalPluginManifestSnapshot(
+  registry: ReturnType<typeof pluginRegistryService>,
+  loader: ReturnType<typeof pluginLoader>,
+  plugin: PluginRecord,
+): Promise<PluginRecord> {
+  if (!plugin.packagePath) {
+    return plugin;
+  }
+
+  const liveManifest = await loader.loadManifest(plugin.packagePath);
+  if (!liveManifest) {
+    return plugin;
+  }
+
+  if (liveManifest.id !== plugin.pluginKey) {
+    throw new Error(
+      `Local plugin manifest id "${liveManifest.id}" does not match installed plugin key "${plugin.pluginKey}"`,
+    );
+  }
+
+  const manifestChanged =
+    plugin.version !== liveManifest.version ||
+    JSON.stringify(plugin.manifestJson) !== JSON.stringify(liveManifest);
+
+  if (!manifestChanged) {
+    return plugin;
+  }
+
+  return (
+    (await registry.update(plugin.id, {
+      version: liveManifest.version,
+      manifest: liveManifest,
+    })) ?? {
+      ...plugin,
+      version: liveManifest.version,
+      manifestJson: liveManifest,
+    }
+  );
 }
 
 /**
@@ -812,11 +853,13 @@ export function pluginRoutes(
     const { pluginId } = req.params;
 
     // Resolve plugin
-    const plugin = await resolvePlugin(registry, pluginId);
+    let plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+
+    plugin = await refreshLocalPluginManifestSnapshot(registry, loader, plugin);
 
     // Validate plugin is in ready state
     if (plugin.status !== "ready") {
@@ -895,11 +938,13 @@ export function pluginRoutes(
     const { pluginId } = req.params;
 
     // Resolve plugin
-    const plugin = await resolvePlugin(registry, pluginId);
+    let plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+
+    plugin = await refreshLocalPluginManifestSnapshot(registry, loader, plugin);
 
     // Validate plugin is in ready state
     if (plugin.status !== "ready") {
@@ -1552,11 +1597,13 @@ export function pluginRoutes(
     assertBoard(req);
     const { pluginId } = req.params;
 
-    const plugin = await resolvePlugin(registry, pluginId);
+    let plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+
+    plugin = await refreshLocalPluginManifestSnapshot(registry, loader, plugin);
 
     const body = req.body as { configJson?: Record<string, unknown> } | undefined;
     if (!body?.configJson || typeof body.configJson !== "object") {
@@ -1663,11 +1710,13 @@ export function pluginRoutes(
 
     const { pluginId } = req.params;
 
-    const plugin = await resolvePlugin(registry, pluginId);
+    let plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
+
+    plugin = await refreshLocalPluginManifestSnapshot(registry, loader, plugin);
 
     if (plugin.status !== "ready") {
       res.status(400).json({

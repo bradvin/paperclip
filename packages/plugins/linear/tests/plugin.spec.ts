@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { Company, Issue } from "@paperclipai/shared";
+import { ENTITY_TYPES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 
@@ -235,6 +236,27 @@ describe("Linear plugin", () => {
     expect(result).toEqual({
       ok: false,
       errors: ["Duplicate company mapping for co_1"],
+    });
+  });
+
+  it("rejects duplicate push targets for the same Paperclip status", async () => {
+    const result = await plugin.definition.onValidateConfig?.({
+      companyMappings: [
+        {
+          companyId: "co_1",
+          teamId: "team_1",
+          apiTokenSecretRef: "secret.linear",
+          statusMappings: [
+            { linearStateId: "state_done", paperclipStatus: "done", syncMode: "push" },
+            { linearStateId: "state_completed", paperclipStatus: "done", syncMode: "bidirectional" },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      errors: ["Duplicate push target for co_1:done"],
     });
   });
 
@@ -562,6 +584,171 @@ describe("Linear plugin", () => {
     expect(imported[0]?.status).toBe("done");
   });
 
+  it("skips pull for Linear statuses marked push-only", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+            statusMappings: [
+              { linearStateId: "state_done", paperclipStatus: "done", syncMode: "push" },
+            ],
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+    });
+
+    const remoteIssue = createRemoteIssue({
+      id: "linear_done",
+      identifier: "ACME-303",
+      title: "Completed only in Linear",
+      updatedAt: "2026-03-20T10:03:00.000Z",
+      state: {
+        id: "state_done",
+        name: "Done",
+        type: "completed",
+      },
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [remoteIssue],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await expect(harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: true,
+    })).resolves.toMatchObject({
+      syncedIssues: 0,
+      lastCursor: "2026-03-20T10:03:00.000Z",
+    });
+
+    const imported = await harness.ctx.issues.list({ companyId: "co_1" });
+    expect(imported).toHaveLength(0);
+  });
+
+  it("pushes done Paperclip issues to Linear statuses marked push-only", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+            statusMappings: [
+              { linearStateId: "state_todo", paperclipStatus: "todo", syncMode: "pull" },
+              { linearStateId: "state_done", paperclipStatus: "done", syncMode: "push" },
+            ],
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [
+        createIssue({
+          id: "iss_done",
+          companyId: "co_1",
+          title: "Ship it",
+          status: "done",
+          identifier: "ACME-12",
+        }),
+      ],
+    });
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.issueLink,
+      scopeKind: "issue",
+      scopeId: "iss_done",
+      externalId: "linear_done",
+      title: "ACME-303",
+      status: "linked",
+      data: {
+        companyId: "co_1",
+        teamId: "team_1",
+        paperclipIssueId: "iss_done",
+        linearIssueId: "linear_done",
+        linearIdentifier: "ACME-303",
+        linearUrl: "https://linear.app/acme/issue/ACME-303/ship-it",
+        lastSyncedAt: NOW.toISOString(),
+      },
+    });
+
+    const issueUpdateCalls: Array<Record<string, unknown>> = [];
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      const query = request.query;
+      if (query.includes("workflowStates")) {
+        return Response.json({
+          data: {
+            workflowStates: {
+              nodes: [
+                { id: "state_todo", name: "Todo", type: "unstarted" },
+                { id: "state_done", name: "Done", type: "completed" },
+              ],
+            },
+          },
+        });
+      }
+      if (query.includes("issueUpdate")) {
+        issueUpdateCalls.push(request.variables?.input as Record<string, unknown>);
+        return Response.json({ data: { issueUpdate: { success: true } } });
+      }
+      if (query.includes("query LinearIssue($id: String!)")) {
+        return Response.json({
+          data: {
+            issue: createRemoteIssue({
+              id: "linear_done",
+              identifier: "ACME-303",
+              title: "Ship it",
+              state: {
+                id: "state_done",
+                name: "Done",
+                type: "completed",
+              },
+            }),
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${query}`);
+    }));
+
+    await harness.performAction("push-issue", {
+      companyId: "co_1",
+      issueId: "iss_done",
+    });
+
+    expect(issueUpdateCalls).toHaveLength(1);
+    expect(issueUpdateCalls[0]).toMatchObject({
+      stateId: "state_done",
+    });
+  });
+
   it("caches the resolved Linear credential across multiple API calls in one sync flow", async () => {
     const harness = createTestHarness({
       manifest,
@@ -837,9 +1024,9 @@ describe("Linear plugin", () => {
         data: {
           workflowStates: {
             nodes: [
-              { id: "state_backlog", name: "Backlog", type: "backlog" },
-              { id: "state_blocked", name: "Blocked", type: "started" },
               { id: "state_done", name: "Done", type: "completed" },
+              { id: "state_blocked", name: "Blocked", type: "started" },
+              { id: "state_backlog", name: "Backlog", type: "backlog" },
             ],
           },
         },
@@ -860,8 +1047,65 @@ describe("Linear plugin", () => {
       recommendedPaperclipStatus: state.recommendedPaperclipStatus,
     }))).toEqual([
       { id: "state_backlog", recommendedPaperclipStatus: "backlog" },
-      { id: "state_blocked", recommendedPaperclipStatus: "blocked" },
       { id: "state_done", recommendedPaperclipStatus: "done" },
+      { id: "state_blocked", recommendedPaperclipStatus: "blocked" },
+    ]);
+  });
+
+  it("prefers exact workflow state name matches over coarse Linear type heuristics", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      expect(request.query).toContain("query LinearWorkflowStates($teamId: ID!)");
+      return Response.json({
+        data: {
+          workflowStates: {
+            nodes: [
+              { id: "state_merging", name: "Merging", type: "started" },
+              { id: "state_review", name: "In Review", type: "started" },
+              { id: "state_todo", name: "To Do", type: "unstarted" },
+              { id: "state_rework", name: "Rework", type: "started" },
+              { id: "state_testing", name: "Testing", type: "started" },
+            ],
+          },
+        },
+      });
+    }));
+
+    const result = await harness.getData<{
+      states: Array<{ id: string; recommendedPaperclipStatus: string }>;
+    }>("workflow-state-options", {
+      companyId: "co_1",
+      teamId: "team_1",
+    });
+
+    expect(result.states.map((state) => ({
+      id: state.id,
+      recommendedPaperclipStatus: state.recommendedPaperclipStatus,
+    }))).toEqual([
+      { id: "state_todo", recommendedPaperclipStatus: "todo" },
+      { id: "state_testing", recommendedPaperclipStatus: "testing" },
+      { id: "state_review", recommendedPaperclipStatus: "in_review" },
+      { id: "state_rework", recommendedPaperclipStatus: "rework" },
+      { id: "state_merging", recommendedPaperclipStatus: "merging" },
     ]);
   });
 

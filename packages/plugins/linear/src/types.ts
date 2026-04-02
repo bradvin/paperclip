@@ -1,10 +1,12 @@
 import type { IssueStatus } from "@paperclipai/shared";
 
 export type SyncDirection = "pull" | "push" | "bidirectional";
+export type LinearStatusSyncMode = "disabled" | "pull" | "push" | "bidirectional";
 
 export interface LinearStatusMapping {
   linearStateId: string;
   paperclipStatus: IssueStatus;
+  syncMode?: LinearStatusSyncMode;
 }
 
 export interface CompanyMappingConfig {
