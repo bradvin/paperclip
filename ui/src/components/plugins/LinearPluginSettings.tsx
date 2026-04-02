@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowUpRight, Key, Loader2, Plus, Trash2, Webhook } from "lucide-react";
-import type { CompanySecret, PluginJobRecord } from "@paperclipai/shared";
+import { ISSUE_STATUSES, type CompanySecret, type IssueStatus, type PluginJobRecord } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { pluginsApi } from "@/api/plugins";
@@ -25,6 +25,11 @@ const LINEAR_POLL_JOB_KEY = "poll-linear";
 
 type LinearSyncDirection = "pull" | "push" | "bidirectional";
 
+type LinearStatusMappingFormState = {
+  linearStateId: string;
+  paperclipStatus: IssueStatus | "";
+};
+
 type LinearMappingFormState = {
   companyId: string;
   teamId: string;
@@ -35,6 +40,8 @@ type LinearMappingFormState = {
   autoCreateLinearIssues: boolean;
   syncComments: boolean;
   blockedStateName: string;
+  statusMappings: LinearStatusMappingFormState[];
+  statusMappingsConfigured: boolean;
   graphqlUrl: string;
   webhookSecretRef: string;
   webhookSecretInput: string;
@@ -49,6 +56,10 @@ type PersistedLinearMapping = {
   autoCreateLinearIssues: boolean;
   syncComments: boolean;
   blockedStateName: string;
+  statusMappings: Array<{
+    linearStateId: string;
+    paperclipStatus: IssueStatus;
+  }>;
   graphqlUrl: string;
   webhookSecretRef: string;
 };
@@ -76,6 +87,45 @@ type LinearOverviewData = {
   companies: LinearCompanySummary[];
 };
 
+type LinearTeamSummary = {
+  id: string;
+  key: string;
+  name: string;
+};
+
+type LinearTeamOptionsData = {
+  companyId: string;
+  identifier: string;
+  totalTeamCount: number;
+  teams: LinearTeamSummary[];
+};
+
+type LinearWorkflowStateOption = {
+  id: string;
+  name: string;
+  type: string;
+  recommendedPaperclipStatus: IssueStatus;
+};
+
+type LinearWorkflowStateOptionsData = {
+  companyId: string;
+  teamId: string;
+  states: LinearWorkflowStateOption[];
+};
+
+const PAPERCLIP_STATUS_LABELS: Record<IssueStatus, string> = {
+  backlog: "Backlog",
+  todo: "Todo",
+  in_progress: "In Progress",
+  testing: "Testing",
+  in_review: "In Review",
+  rework: "Rework",
+  merging: "Merging",
+  done: "Done",
+  blocked: "Blocked",
+  cancelled: "Cancelled",
+};
+
 function createEmptyMapping(defaultCompanyId: string | null): LinearMappingFormState {
   return {
     companyId: defaultCompanyId ?? "",
@@ -87,6 +137,8 @@ function createEmptyMapping(defaultCompanyId: string | null): LinearMappingFormS
     autoCreateLinearIssues: true,
     syncComments: true,
     blockedStateName: "",
+    statusMappings: [],
+    statusMappingsConfigured: false,
     graphqlUrl: "",
     webhookSecretRef: "",
     webhookSecretInput: "",
@@ -120,6 +172,16 @@ function parseMappings(
       autoCreateLinearIssues: entry.autoCreateLinearIssues !== false,
       syncComments: entry.syncComments !== false,
       blockedStateName: normalizeString(entry.blockedStateName),
+      statusMappings: Array.isArray(entry.statusMappings)
+        ? entry.statusMappings
+            .filter((mapping): mapping is Record<string, unknown> => Boolean(mapping) && typeof mapping === "object")
+            .map((mapping) => ({
+              linearStateId: normalizeString(mapping.linearStateId),
+              paperclipStatus: normalizeString(mapping.paperclipStatus) as IssueStatus | "",
+            }))
+            .filter((mapping) => mapping.linearStateId)
+        : [],
+      statusMappingsConfigured: Array.isArray(entry.statusMappings),
       graphqlUrl: normalizeString(entry.graphqlUrl),
       webhookSecretRef: normalizeString(entry.webhookSecretRef),
       webhookSecretInput: "",
@@ -138,6 +200,11 @@ function toPersistedMappings(mappings: LinearMappingFormState[]): PersistedLinea
     autoCreateLinearIssues: mapping.autoCreateLinearIssues,
     syncComments: mapping.syncComments,
     blockedStateName: mapping.blockedStateName.trim(),
+    statusMappings: mapping.statusMappings
+      .filter((statusMapping): statusMapping is { linearStateId: string; paperclipStatus: IssueStatus } =>
+        Boolean(statusMapping.linearStateId && statusMapping.paperclipStatus),
+      )
+      .sort((left, right) => left.linearStateId.localeCompare(right.linearStateId)),
     graphqlUrl: mapping.graphqlUrl.trim(),
     webhookSecretRef: mapping.webhookSecretRef,
   }));
@@ -150,6 +217,7 @@ function serializeMappings(mappings: LinearMappingFormState[]): string {
 function validationErrors(
   mappings: LinearMappingFormState[],
   knownCompanyIds: Set<string>,
+  allowedTeamIdsByMapping: Array<Set<string> | null>,
 ): string[] {
   const errors: string[] = [];
   const seenCompanies = new Set<string>();
@@ -166,12 +234,13 @@ function validationErrors(
       seenCompanies.add(mapping.companyId);
     }
 
-    if (!mapping.teamId.trim()) {
-      errors.push(`${label}: Linear team ID is required.`);
-    }
-
     if (!mapping.apiTokenSecretRef && !mapping.apiKeyInput.trim()) {
       errors.push(`${label}: add a Linear API key.`);
+    }
+
+    const allowedTeamIds = allowedTeamIdsByMapping[index];
+    if (mapping.teamId.trim() && allowedTeamIds && !allowedTeamIds.has(mapping.teamId.trim())) {
+      errors.push(`${label}: choose a Linear team whose identifier matches the Paperclip company.`);
     }
 
     if (mapping.graphqlUrl.trim()) {
@@ -202,6 +271,20 @@ function formatTimestamp(value?: string | Date | null): string {
     return value.toISOString();
   }
   return date.toLocaleString();
+}
+
+function normalizeStatusMappingsForStates(
+  currentMappings: LinearStatusMappingFormState[],
+  states: LinearWorkflowStateOption[],
+  useRecommendations: boolean,
+): LinearStatusMappingFormState[] {
+  const currentByStateId = new Map(
+    currentMappings.map((mapping) => [mapping.linearStateId, mapping.paperclipStatus]),
+  );
+  return states.map((state) => ({
+    linearStateId: state.id,
+    paperclipStatus: currentByStateId.get(state.id) ?? (useRecommendations ? state.recommendedPaperclipStatus : ""),
+  }));
 }
 
 export function LinearPluginSettings({
@@ -276,13 +359,107 @@ export function LinearPluginSettings({
     });
     return map;
   }, [mappedCompanyIds, secretQueries]);
-
-  const errors = useMemo(
-    () => validationErrors(mappings, knownCompanyIds),
-    [knownCompanyIds, mappings],
-  );
   const webhookUrl = useMemo(() => webhookUrlForPlugin(pluginId), [pluginId]);
   const pluginReady = pluginStatus === "ready";
+
+  const teamOptionQueries = useQueries({
+    queries: mappings.map((mapping) => ({
+      queryKey: [
+        "plugins",
+        pluginId,
+        "linear-team-options",
+        mapping.companyId || "__none__",
+        mapping.apiTokenSecretRef || "__no-secret__",
+      ] as const,
+      queryFn: async () => {
+        const response = await pluginsApi.bridgeGetData(
+          pluginId,
+          "team-options",
+          { companyId: mapping.companyId },
+          mapping.companyId,
+        );
+        return response.data as LinearTeamOptionsData;
+      },
+      enabled: pluginReady && Boolean(mapping.companyId && mapping.apiTokenSecretRef),
+      staleTime: 60_000,
+    })),
+  });
+
+  const allowedTeamIdsByMapping = useMemo(
+    () =>
+      teamOptionQueries.map((query) =>
+        query.data ? new Set(query.data.teams.map((team) => team.id)) : null,
+      ),
+    [teamOptionQueries],
+  );
+
+  const workflowStateQueries = useQueries({
+    queries: mappings.map((mapping, index) => {
+      const allowedTeamIds = allowedTeamIdsByMapping[index];
+      const teamIsAllowed = Boolean(mapping.teamId && allowedTeamIds?.has(mapping.teamId));
+      return {
+        queryKey: [
+          "plugins",
+          pluginId,
+          "linear-workflow-state-options",
+          mapping.companyId || "__none__",
+          mapping.teamId || "__none__",
+          mapping.apiTokenSecretRef || "__no-secret__",
+        ] as const,
+        queryFn: async () => {
+          const response = await pluginsApi.bridgeGetData(
+            pluginId,
+            "workflow-state-options",
+            { companyId: mapping.companyId, teamId: mapping.teamId },
+            mapping.companyId,
+          );
+          return response.data as LinearWorkflowStateOptionsData;
+        },
+        enabled: pluginReady && Boolean(mapping.companyId && mapping.apiTokenSecretRef && teamIsAllowed),
+        staleTime: 60_000,
+      };
+    }),
+  });
+
+  useEffect(() => {
+    setMappings((current) => {
+      let changed = false;
+      const next = current.map((mapping, index) => {
+        const states = workflowStateQueries[index]?.data?.states;
+        if (!states?.length) return mapping;
+        const normalizedStatusMappings = normalizeStatusMappingsForStates(
+          mapping.statusMappings,
+          states,
+          !mapping.statusMappingsConfigured,
+        );
+        if (JSON.stringify(normalizedStatusMappings) === JSON.stringify(mapping.statusMappings)) {
+          return mapping;
+        }
+        changed = true;
+        return {
+          ...mapping,
+          statusMappings: normalizedStatusMappings,
+        };
+      });
+      return changed ? next : current;
+    });
+  }, [workflowStateQueries]);
+
+  const hasBlockingWorkflowStateSetup = useMemo(
+    () =>
+      mappings.some((mapping, index) => {
+        const allowedTeamIds = allowedTeamIdsByMapping[index];
+        if (!mapping.teamId.trim() || !allowedTeamIds?.has(mapping.teamId.trim())) return false;
+        const query = workflowStateQueries[index];
+        return !query?.data || Boolean(query.error) || query.isPending;
+      }),
+    [allowedTeamIdsByMapping, mappings, workflowStateQueries],
+  );
+
+  const errors = useMemo(
+    () => validationErrors(mappings, knownCompanyIds, allowedTeamIdsByMapping),
+    [allowedTeamIdsByMapping, knownCompanyIds, mappings],
+  );
 
   const { data: jobsData } = useQuery({
     queryKey: queryKeys.plugins.jobs(pluginId),
@@ -379,6 +556,16 @@ export function LinearPluginSettings({
           syncComments: mapping.syncComments,
         };
 
+        if (mapping.teamId.trim()) {
+          configMapping.statusMappings = mapping.statusMappings
+            .filter((statusMapping) => statusMapping.linearStateId)
+            .map((statusMapping) => ({
+              linearStateId: statusMapping.linearStateId,
+              paperclipStatus: statusMapping.paperclipStatus,
+            }))
+            .filter((statusMapping) => Boolean(statusMapping.paperclipStatus));
+        }
+
         const blockedStateName = mapping.blockedStateName.trim();
         if (blockedStateName) {
           configMapping.blockedStateName = blockedStateName;
@@ -398,6 +585,7 @@ export function LinearPluginSettings({
           ...mapping,
           apiTokenSecretRef,
           apiKeyInput: "",
+          statusMappingsConfigured: Boolean(mapping.teamId.trim()),
           webhookSecretRef,
           webhookSecretInput: "",
         });
@@ -416,6 +604,8 @@ export function LinearPluginSettings({
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.detail(pluginId) });
       queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-overview"] });
+      queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-team-options"] });
+      queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-workflow-state-options"] });
       touchedCompanyIds.forEach((companyId) => {
         queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(companyId) });
       });
@@ -509,7 +699,7 @@ export function LinearPluginSettings({
         <CardHeader className="pb-4">
           <CardTitle className="text-base">Linear connection</CardTitle>
           <CardDescription>
-            Map each Paperclip company to a Linear team, store the API key securely, and configure how sync should behave.
+            Save the API key first, then pick a Linear team whose identifier matches the Paperclip company before enabling sync options.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -594,6 +784,17 @@ export function LinearPluginSettings({
             const company = companyById.get(mapping.companyId);
             const summary = mapping.companyId ? overviewByCompanyId.get(mapping.companyId) ?? null : null;
             const companySecrets = secretsByCompanyId.get(mapping.companyId) ?? [];
+            const teamQuery = teamOptionQueries[index];
+            const workflowStateQuery = workflowStateQueries[index];
+            const teamOptions = teamQuery?.data?.teams ?? [];
+            const workflowStateOptions = workflowStateQuery?.data?.states ?? [];
+            const paperclipIdentifier = company?.issuePrefix?.trim().toUpperCase() ?? "";
+            const hasSavedApiKey = Boolean(mapping.apiTokenSecretRef);
+            const hasFullMapping = Boolean(mapping.teamId.trim());
+            const selectedTeamMatches = !mapping.teamId.trim() || teamOptions.some((team) => team.id === mapping.teamId.trim());
+            const selectedTeamAllowed = Boolean(mapping.teamId.trim() && allowedTeamIdsByMapping[index]?.has(mapping.teamId.trim()));
+            const currentTeamLabel = teamOptions.find((team) => team.id === mapping.teamId.trim()) ?? null;
+            const mappedWorkflowStatusCount = mapping.statusMappings.filter((statusMapping) => statusMapping.paperclipStatus).length;
             const apiSecret = mapping.apiTokenSecretRef
               ? companySecrets.find((secret) => secret.id === mapping.apiTokenSecretRef) ?? null
               : null;
@@ -634,6 +835,9 @@ export function LinearPluginSettings({
                         updateMapping(index, (current) => ({
                           ...current,
                           companyId: value,
+                          teamId: current.companyId === value ? current.teamId : "",
+                          statusMappings: current.companyId === value ? current.statusMappings : [],
+                          statusMappingsConfigured: current.companyId === value ? current.statusMappingsConfigured : false,
                           apiTokenSecretRef: current.companyId === value ? current.apiTokenSecretRef : "",
                           apiKeyInput: "",
                           webhookSecretRef: current.companyId === value ? current.webhookSecretRef : "",
@@ -653,21 +857,9 @@ export function LinearPluginSettings({
                         ))}
                       </SelectContent>
                     </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Linear team ID</Label>
-                    <Input
-                      value={mapping.teamId}
-                      onChange={(event) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          teamId: event.target.value,
-                        }))
-                      }
-                      placeholder="team_abc123"
-                      disabled={saveMutation.isPending}
-                    />
+                    <p className="text-xs text-muted-foreground">
+                      {company ? `Identifier: ${company.issuePrefix}` : "Choose the Paperclip company you want to connect."}
+                    </p>
                   </div>
 
                   <div className="space-y-2">
@@ -686,250 +878,424 @@ export function LinearPluginSettings({
                     />
                     <p className="text-xs text-muted-foreground">
                       {apiSecret
-                        ? `Stored securely as “${apiSecret.name}”. Enter a new value to rotate it.`
+                        ? `Stored securely as "${apiSecret.name}". Save to refresh the matching Linear teams.`
                         : mapping.apiTokenSecretRef
-                          ? "An API key is already stored for this mapping. Enter a new value to replace it."
-                          : "The API key is stored as a company secret and is never written back into plugin config."}
+                          ? "An API key is already stored for this company. Save again after updating it to refresh the team list."
+                          : "Save the API key first. Paperclip stores it as a company secret, then loads Linear teams that match the company identifier."}
                     </p>
                   </div>
+                </div>
 
-                  <div className="space-y-2">
-                    <Label>Sync direction</Label>
-                    <Select
-                      value={mapping.syncDirection}
-                      onValueChange={(value) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          syncDirection: value as LinearSyncDirection,
-                        }))
-                      }
-                      disabled={saveMutation.isPending}
-                    >
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="bidirectional">Bidirectional</SelectItem>
-                        <SelectItem value="pull">Pull from Linear</SelectItem>
-                        <SelectItem value="push">Push to Linear</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                {hasSavedApiKey ? (
+                  <div className="mt-4 rounded-lg border border-border/60 bg-background/50 p-3">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">Linear team</p>
+                      <p className="text-xs text-muted-foreground">
+                        Only teams with identifier {paperclipIdentifier || "matching the selected company"} are eligible.
+                      </p>
+                    </div>
 
-                  <div className="space-y-2">
-                    <Label>Blocked workflow state</Label>
-                    <Input
-                      value={mapping.blockedStateName}
-                      onChange={(event) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          blockedStateName: event.target.value,
-                        }))
-                      }
-                      placeholder="Blocked"
-                      disabled={saveMutation.isPending}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>GraphQL URL override</Label>
-                    <Input
-                      value={mapping.graphqlUrl}
-                      onChange={(event) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          graphqlUrl: event.target.value,
-                        }))
-                      }
-                      placeholder="https://api.linear.app/graphql"
-                      disabled={saveMutation.isPending}
-                    />
-                  </div>
-
-                  <div className="space-y-2 md:col-span-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <Label>Webhook signing secret</Label>
-                      {mapping.webhookSecretRef ? (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-auto px-0 text-xs text-muted-foreground hover:text-destructive"
-                          onClick={() =>
+                    {!pluginReady ? (
+                      <p className="mt-3 text-xs text-muted-foreground">
+                        Enable the plugin to load Linear teams.
+                      </p>
+                    ) : teamQuery?.isPending ? (
+                      <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Loading matching Linear teams...
+                      </div>
+                    ) : teamQuery?.error ? (
+                      <p className="mt-3 text-xs text-destructive">
+                        {(teamQuery.error as Error).message}
+                      </p>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        <Select
+                          value={mapping.teamId}
+                          onValueChange={(value) =>
                             updateMapping(index, (current) => ({
                               ...current,
-                              webhookSecretRef: "",
-                              webhookSecretInput: "",
+                              teamId: value,
+                              statusMappings: current.teamId === value ? current.statusMappings : [],
+                              statusMappingsConfigured: current.teamId === value ? current.statusMappingsConfigured : false,
+                            }))
+                          }
+                          disabled={saveMutation.isPending || teamOptions.length === 0}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue
+                              placeholder={
+                                teamOptions.length > 0
+                                  ? "Select a matching Linear team"
+                                  : `No Linear teams found for ${paperclipIdentifier || "this company"}`
+                              }
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {!selectedTeamMatches && mapping.teamId.trim() ? (
+                              <SelectItem value={mapping.teamId.trim()}>
+                                {`Current config (${mapping.teamId.trim()})`}
+                              </SelectItem>
+                            ) : null}
+                            {teamOptions.map((team) => (
+                              <SelectItem key={team.id} value={team.id}>
+                                {`${team.name} (${team.key})`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+
+                        {currentTeamLabel ? (
+                          <p className="text-xs text-muted-foreground">
+                            Selected team: {currentTeamLabel.name} ({currentTeamLabel.key})
+                          </p>
+                        ) : null}
+
+                        {!selectedTeamMatches && mapping.teamId.trim() ? (
+                          <p className="text-xs text-destructive">
+                            The saved Linear team no longer matches Paperclip identifier {paperclipIdentifier}. Choose a matching team before saving again.
+                          </p>
+                        ) : null}
+
+                        {teamOptions.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">
+                            {teamQuery?.data?.totalTeamCount
+                              ? `This API key can see ${teamQuery.data.totalTeamCount} team${teamQuery.data.totalTeamCount === 1 ? "" : "s"}, but none use identifier ${paperclipIdentifier}.`
+                              : `No Linear teams were returned for this API key and identifier ${paperclipIdentifier}.`}
+                          </p>
+                        ) : !hasFullMapping ? (
+                          <p className="text-xs text-muted-foreground">
+                            Choose the matching team to load its workflow statuses.
+                          </p>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {hasFullMapping ? (
+                  <>
+                    <div className="mt-4 rounded-lg border border-border/60 bg-background/50 p-3">
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium text-foreground">Workflow status mapping</p>
+                        <p className="text-xs text-muted-foreground">
+                          Review every Linear team status and choose the Paperclip status it should sync into. Any Linear status left on "Do not sync" will be ignored on pull.
+                        </p>
+                      </div>
+
+                      {!pluginReady ? (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          Enable the plugin to load Linear workflow statuses.
+                        </p>
+                      ) : !selectedTeamAllowed ? (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          Choose a valid Linear team before loading workflow statuses.
+                        </p>
+                      ) : workflowStateQuery?.isPending ? (
+                        <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Loading Linear workflow statuses...
+                        </div>
+                      ) : workflowStateQuery?.error ? (
+                        <p className="mt-3 text-xs text-destructive">
+                          {(workflowStateQuery.error as Error).message}
+                        </p>
+                      ) : workflowStateOptions.length === 0 ? (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          No workflow statuses were returned for this Linear team.
+                        </p>
+                      ) : (
+                        <>
+                          <div className="mt-3 space-y-2">
+                            {workflowStateOptions.map((state) => {
+                              const mappedStatus =
+                                mapping.statusMappings.find((statusMapping) => statusMapping.linearStateId === state.id)?.paperclipStatus ?? "";
+                              return (
+                                <div
+                                  key={state.id}
+                                  className="grid gap-3 rounded-lg border border-border/50 bg-muted/10 p-3 md:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.9fr)] md:items-center"
+                                >
+                                  <div className="space-y-1">
+                                    <p className="text-sm font-medium text-foreground">{state.name}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      Type: {state.type} · Suggested: {PAPERCLIP_STATUS_LABELS[state.recommendedPaperclipStatus]}
+                                    </p>
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`linear-status-${index}-${state.id}`}>Paperclip status</Label>
+                                    <Select
+                                      value={mappedStatus || "__skip__"}
+                                      onValueChange={(value) =>
+                                        updateMapping(index, (current) => ({
+                                          ...current,
+                                          statusMappings: current.statusMappings.map((statusMapping) =>
+                                            statusMapping.linearStateId === state.id
+                                              ? {
+                                                  ...statusMapping,
+                                                  paperclipStatus: value === "__skip__" ? "" : (value as IssueStatus),
+                                                }
+                                              : statusMapping,
+                                          ),
+                                          statusMappingsConfigured: true,
+                                        }))
+                                      }
+                                      disabled={saveMutation.isPending}
+                                    >
+                                      <SelectTrigger id={`linear-status-${index}-${state.id}`} className="w-full">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="__skip__">Do not sync</SelectItem>
+                                        {ISSUE_STATUSES.map((status) => (
+                                          <SelectItem key={status} value={status}>
+                                            {PAPERCLIP_STATUS_LABELS[status]}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <p className="mt-3 text-xs text-muted-foreground">
+                            {mappedWorkflowStatusCount} of {workflowStateOptions.length} Linear statuses will sync into Paperclip.
+                          </p>
+                          {mappedWorkflowStatusCount === 0 ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                              No Linear statuses are mapped yet, so pull sync will skip every Linear issue for this team.
+                            </p>
+                          ) : null}
+                        </>
+                      )}
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Sync direction</Label>
+                        <Select
+                          value={mapping.syncDirection}
+                          onValueChange={(value) =>
+                            updateMapping(index, (current) => ({
+                              ...current,
+                              syncDirection: value as LinearSyncDirection,
                             }))
                           }
                           disabled={saveMutation.isPending}
                         >
-                          Clear stored secret
-                        </Button>
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="bidirectional">Bidirectional</SelectItem>
+                            <SelectItem value="pull">Pull from Linear</SelectItem>
+                            <SelectItem value="push">Push to Linear</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>GraphQL URL override</Label>
+                        <Input
+                          value={mapping.graphqlUrl}
+                          onChange={(event) =>
+                            updateMapping(index, (current) => ({
+                              ...current,
+                              graphqlUrl: event.target.value,
+                            }))
+                          }
+                          placeholder="https://api.linear.app/graphql"
+                          disabled={saveMutation.isPending}
+                        />
+                      </div>
+
+                      <div className="space-y-2 md:col-span-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <Label>Webhook signing secret</Label>
+                          {mapping.webhookSecretRef ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-auto px-0 text-xs text-muted-foreground hover:text-destructive"
+                              onClick={() =>
+                                updateMapping(index, (current) => ({
+                                  ...current,
+                                  webhookSecretRef: "",
+                                  webhookSecretInput: "",
+                                }))
+                              }
+                              disabled={saveMutation.isPending}
+                            >
+                              Clear stored secret
+                            </Button>
+                          ) : null}
+                        </div>
+                        <Input
+                          type="password"
+                          value={mapping.webhookSecretInput}
+                          onChange={(event) =>
+                            updateMapping(index, (current) => ({
+                              ...current,
+                              webhookSecretInput: event.target.value,
+                            }))
+                          }
+                          placeholder={
+                            mapping.webhookSecretRef
+                              ? "Leave blank to keep the stored webhook secret"
+                              : "Optional"
+                          }
+                          disabled={saveMutation.isPending || !mapping.companyId}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          {webhookSecret
+                            ? `Stored securely as "${webhookSecret.name}". Enter a new value to rotate it.`
+                            : mapping.webhookSecretRef
+                              ? "A webhook secret is already stored for this mapping. Enter a new value to replace it."
+                              : "Only needed if you configure Linear webhooks."}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 rounded-lg border border-border/60 bg-background/50 p-3 md:grid-cols-3">
+                      <label className="flex items-start gap-3 text-sm">
+                        <Checkbox
+                          checked={mapping.importLinearIssues}
+                          onCheckedChange={(checked) =>
+                            updateMapping(index, (current) => ({
+                              ...current,
+                              importLinearIssues: checked !== false,
+                            }))
+                          }
+                          disabled={saveMutation.isPending}
+                        />
+                        <span>
+                          <span className="font-medium text-foreground">Import Linear issues</span>
+                          <span className="block text-xs text-muted-foreground">
+                            Create Paperclip issues when a linked or referenced Linear issue appears.
+                          </span>
+                        </span>
+                      </label>
+
+                      <label className="flex items-start gap-3 text-sm">
+                        <Checkbox
+                          checked={mapping.autoCreateLinearIssues}
+                          onCheckedChange={(checked) =>
+                            updateMapping(index, (current) => ({
+                              ...current,
+                              autoCreateLinearIssues: checked !== false,
+                            }))
+                          }
+                          disabled={saveMutation.isPending}
+                        />
+                        <span>
+                          <span className="font-medium text-foreground">Auto-create Linear issues</span>
+                          <span className="block text-xs text-muted-foreground">
+                            Create a Linear issue automatically when a Paperclip issue needs to sync out.
+                          </span>
+                        </span>
+                      </label>
+
+                      <label className="flex items-start gap-3 text-sm">
+                        <Checkbox
+                          checked={mapping.syncComments}
+                          onCheckedChange={(checked) =>
+                            updateMapping(index, (current) => ({
+                              ...current,
+                              syncComments: checked !== false,
+                            }))
+                          }
+                          disabled={saveMutation.isPending}
+                        />
+                        <span>
+                          <span className="font-medium text-foreground">Sync comments</span>
+                          <span className="block text-xs text-muted-foreground">
+                            Mirror Paperclip comments to Linear and import Linear comments back.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
+                    <div className="mt-4 rounded-lg border border-border/60 bg-background/50 p-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium text-foreground">Manual sync</p>
+                          <p className="text-xs text-muted-foreground">
+                            Use the same pull actions from the Linear page directly here.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => resyncMutation.mutate({ companyId: mapping.companyId, full: false })}
+                            disabled={
+                              saveMutation.isPending ||
+                              resyncMutation.isPending ||
+                              !mapping.companyId ||
+                              !pluginReady ||
+                              isDirty
+                            }
+                          >
+                            {resyncMutation.isPending && resyncMutation.variables?.companyId === mapping.companyId && !resyncMutation.variables?.full ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Pulling...
+                              </>
+                            ) : (
+                              "Pull recent"
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => resyncMutation.mutate({ companyId: mapping.companyId, full: true })}
+                            disabled={
+                              saveMutation.isPending ||
+                              resyncMutation.isPending ||
+                              !mapping.companyId ||
+                              !pluginReady ||
+                              isDirty
+                            }
+                          >
+                            {resyncMutation.isPending && resyncMutation.variables?.companyId === mapping.companyId && resyncMutation.variables?.full ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Resyncing...
+                              </>
+                            ) : (
+                              "Full resync"
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
+                        <div>Linked issues: {summary?.linkedIssues ?? 0}</div>
+                        <div>Last success: {formatTimestamp(summary?.lastSuccessAt)}</div>
+                        <div>Last run: {formatTimestamp(summary?.lastRunAt)}</div>
+                        <div>Cursor: {summary?.lastCursor ?? "None"}</div>
+                      </div>
+
+                      {!pluginReady ? (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          Enable the plugin to run manual sync actions.
+                        </p>
+                      ) : isDirty ? (
+                        <p className="mt-3 text-xs text-muted-foreground">
+                          Save your settings before running a manual sync so the worker uses the latest mapping.
+                        </p>
+                      ) : null}
+
+                      {summary?.lastError ? (
+                        <p className="mt-3 text-xs text-destructive">{summary.lastError}</p>
                       ) : null}
                     </div>
-                    <Input
-                      type="password"
-                      value={mapping.webhookSecretInput}
-                      onChange={(event) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          webhookSecretInput: event.target.value,
-                        }))
-                      }
-                      placeholder={
-                        mapping.webhookSecretRef
-                          ? "Leave blank to keep the stored webhook secret"
-                          : "Optional"
-                      }
-                      disabled={saveMutation.isPending || !mapping.companyId}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      {webhookSecret
-                        ? `Stored securely as “${webhookSecret.name}”. Enter a new value to rotate it.`
-                        : mapping.webhookSecretRef
-                          ? "A webhook secret is already stored for this mapping. Enter a new value to replace it."
-                          : "Only needed if you configure Linear webhooks."}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-3 rounded-lg border border-border/60 bg-background/50 p-3 md:grid-cols-3">
-                  <label className="flex items-start gap-3 text-sm">
-                    <Checkbox
-                      checked={mapping.importLinearIssues}
-                      onCheckedChange={(checked) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          importLinearIssues: checked !== false,
-                        }))
-                      }
-                      disabled={saveMutation.isPending}
-                    />
-                    <span>
-                      <span className="font-medium text-foreground">Import Linear issues</span>
-                      <span className="block text-xs text-muted-foreground">
-                        Create Paperclip issues when a linked or referenced Linear issue appears.
-                      </span>
-                    </span>
-                  </label>
-
-                  <label className="flex items-start gap-3 text-sm">
-                    <Checkbox
-                      checked={mapping.autoCreateLinearIssues}
-                      onCheckedChange={(checked) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          autoCreateLinearIssues: checked !== false,
-                        }))
-                      }
-                      disabled={saveMutation.isPending}
-                    />
-                    <span>
-                      <span className="font-medium text-foreground">Auto-create Linear issues</span>
-                      <span className="block text-xs text-muted-foreground">
-                        Create a Linear issue automatically when a Paperclip issue needs to sync out.
-                      </span>
-                    </span>
-                  </label>
-
-                  <label className="flex items-start gap-3 text-sm">
-                    <Checkbox
-                      checked={mapping.syncComments}
-                      onCheckedChange={(checked) =>
-                        updateMapping(index, (current) => ({
-                          ...current,
-                          syncComments: checked !== false,
-                        }))
-                      }
-                      disabled={saveMutation.isPending}
-                    />
-                    <span>
-                      <span className="font-medium text-foreground">Sync comments</span>
-                      <span className="block text-xs text-muted-foreground">
-                        Mirror Paperclip comments to Linear and import Linear comments back.
-                      </span>
-                    </span>
-                  </label>
-                </div>
-
-                <div className="mt-4 rounded-lg border border-border/60 bg-background/50 p-3">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium text-foreground">Manual sync</p>
-                      <p className="text-xs text-muted-foreground">
-                        Use the same pull actions from the Linear page directly here.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => resyncMutation.mutate({ companyId: mapping.companyId, full: false })}
-                        disabled={
-                          saveMutation.isPending ||
-                          resyncMutation.isPending ||
-                          !mapping.companyId ||
-                          !pluginReady ||
-                          isDirty
-                        }
-                      >
-                        {resyncMutation.isPending && resyncMutation.variables?.companyId === mapping.companyId && !resyncMutation.variables?.full ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Pulling...
-                          </>
-                        ) : (
-                          "Pull recent"
-                        )}
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => resyncMutation.mutate({ companyId: mapping.companyId, full: true })}
-                        disabled={
-                          saveMutation.isPending ||
-                          resyncMutation.isPending ||
-                          !mapping.companyId ||
-                          !pluginReady ||
-                          isDirty
-                        }
-                      >
-                        {resyncMutation.isPending && resyncMutation.variables?.companyId === mapping.companyId && resyncMutation.variables?.full ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Resyncing...
-                          </>
-                        ) : (
-                          "Full resync"
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
-                    <div>Linked issues: {summary?.linkedIssues ?? 0}</div>
-                    <div>Last success: {formatTimestamp(summary?.lastSuccessAt)}</div>
-                    <div>Last run: {formatTimestamp(summary?.lastRunAt)}</div>
-                    <div>Cursor: {summary?.lastCursor ?? "None"}</div>
-                  </div>
-
-                  {!pluginReady ? (
-                    <p className="mt-3 text-xs text-muted-foreground">
-                      Enable the plugin to run manual sync actions.
-                    </p>
-                  ) : isDirty ? (
-                    <p className="mt-3 text-xs text-muted-foreground">
-                      Save your settings before running a manual sync so the worker uses the latest mapping.
-                    </p>
-                  ) : null}
-
-                  {summary?.lastError ? (
-                    <p className="mt-3 text-xs text-destructive">{summary.lastError}</p>
-                  ) : null}
-                </div>
+                  </>
+                ) : null}
               </div>
             );
           })}
@@ -952,7 +1318,7 @@ export function LinearPluginSettings({
             <Button
               type="button"
               onClick={() => saveMutation.mutate()}
-              disabled={saveMutation.isPending || errors.length > 0 || !isDirty}
+              disabled={saveMutation.isPending || errors.length > 0 || hasBlockingWorkflowStateSetup || !isDirty}
             >
               {saveMutation.isPending ? (
                 <>

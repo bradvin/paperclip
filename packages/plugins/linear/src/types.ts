@@ -1,4 +1,11 @@
+import type { IssueStatus } from "@paperclipai/shared";
+
 export type SyncDirection = "pull" | "push" | "bidirectional";
+
+export interface LinearStatusMapping {
+  linearStateId: string;
+  paperclipStatus: IssueStatus;
+}
 
 export interface CompanyMappingConfig {
   companyId: string;
@@ -9,6 +16,7 @@ export interface CompanyMappingConfig {
   autoCreateLinearIssues?: boolean;
   syncComments?: boolean;
   blockedStateName?: string;
+  statusMappings?: LinearStatusMapping[];
   graphqlUrl?: string;
   webhookSecretRef?: string;
 }
@@ -21,6 +29,12 @@ export interface LinearWorkflowState {
   id: string;
   name: string;
   type: string;
+}
+
+export interface LinearTeam {
+  id: string;
+  key: string;
+  name: string;
 }
 
 export interface LinearIssueRef {

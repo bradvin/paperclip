@@ -1,6 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { DEFAULT_GRAPHQL_URL } from "./constants.js";
-import type { CompanyMappingConfig, LinearIssue, LinearWorkflowState } from "./types.js";
+import type { CompanyMappingConfig, LinearIssue, LinearTeam, LinearWorkflowState } from "./types.js";
 
 type GraphqlEnvelope<T> = {
   data?: T;
@@ -33,8 +33,15 @@ type WorkflowStateResponse = {
   };
 };
 
+type TeamResponse = {
+  teams: {
+    nodes: LinearTeam[];
+  };
+};
+
 const AUTH_HEADER_CACHE_TTL_MS = 60_000;
 const authHeaderCache = new Map<string, { value: string; expiresAt: number }>();
+type LinearAuthConfig = Pick<CompanyMappingConfig, "apiTokenSecretRef" | "graphqlUrl">;
 
 const ISSUE_SELECTION = `
   id
@@ -93,10 +100,22 @@ const ISSUE_SELECTION = `
   }
 `;
 
-async function getAuthHeader(ctx: PluginContext, mapping: CompanyMappingConfig): Promise<string> {
+export function clearAuthHeaderCache(secretRef?: string): void {
+  if (secretRef) {
+    authHeaderCache.delete(secretRef);
+    return;
+  }
+  authHeaderCache.clear();
+}
+
+async function getAuthHeader(
+  ctx: PluginContext,
+  mapping: LinearAuthConfig,
+  opts?: { bypassCache?: boolean },
+): Promise<string> {
   const cacheKey = mapping.apiTokenSecretRef;
-  const cached = authHeaderCache.get(cacheKey);
   const now = Date.now();
+  const cached = opts?.bypassCache ? null : authHeaderCache.get(cacheKey);
   if (cached && cached.expiresAt > now) {
     return cached.value;
   }
@@ -112,11 +131,14 @@ async function getAuthHeader(ctx: PluginContext, mapping: CompanyMappingConfig):
 
 async function linearGraphql<T>(
   ctx: PluginContext,
-  mapping: CompanyMappingConfig,
+  mapping: LinearAuthConfig,
   query: string,
   variables?: Record<string, unknown>,
+  opts?: { bypassAuthCache?: boolean },
 ): Promise<T> {
-  const authorization = await getAuthHeader(ctx, mapping);
+  const authorization = await getAuthHeader(ctx, mapping, {
+    bypassCache: opts?.bypassAuthCache,
+  });
   const response = await ctx.http.fetch(mapping.graphqlUrl || DEFAULT_GRAPHQL_URL, {
     method: "POST",
     headers: {
@@ -271,6 +293,32 @@ export async function listLinearIssuesUpdatedSince(
   } while (after);
 
   return issues;
+}
+
+export async function listLinearTeams(
+  ctx: PluginContext,
+  mapping: LinearAuthConfig,
+): Promise<LinearTeam[]> {
+  const data = await linearGraphql<TeamResponse>(
+    ctx,
+    mapping,
+    `query LinearTeams {
+      teams(first: 100) {
+        nodes {
+          id
+          key
+          name
+        }
+      }
+    }`,
+    undefined,
+    { bypassAuthCache: true },
+  );
+  return [...data.teams.nodes].sort((left, right) => {
+    const leftLabel = `${left.key}:${left.name}`.toLowerCase();
+    const rightLabel = `${right.key}:${right.name}`.toLowerCase();
+    return leftLabel.localeCompare(rightLabel);
+  });
 }
 
 export async function listWorkflowStates(

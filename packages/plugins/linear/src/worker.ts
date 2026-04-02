@@ -7,7 +7,7 @@ import {
   type PluginEntityRecord,
   type PluginWebhookInput,
 } from "@paperclipai/plugin-sdk";
-import type { Issue, IssueComment } from "@paperclipai/shared";
+import { ISSUE_STATUSES, type Issue, type IssueComment } from "@paperclipai/shared";
 import {
   ENTITY_TYPES,
   JOB_KEYS,
@@ -17,6 +17,7 @@ import {
   WEBHOOK_KEYS,
 } from "./constants.js";
 import {
+  clearAuthHeaderCache,
   createLinearComment,
   createLinearIssue,
   createLinearRelation,
@@ -24,6 +25,7 @@ import {
   getLinearIssue,
   getLinearIssueByRef,
   listLinearIssuesUpdatedSince,
+  listLinearTeams,
   listWorkflowStates,
   updateLinearIssue,
 } from "./linear-api.js";
@@ -33,9 +35,24 @@ import type {
   LinearIssue,
   LinearIssueLinkData,
   LinearPluginConfig,
+  LinearStatusMapping,
   LinearWorkflowState,
   SyncCheckpoint,
 } from "./types.js";
+
+type StoredCompanyMapping = {
+  companyId: string;
+  teamId: string;
+  apiTokenSecretRef: string;
+  syncDirection?: CompanyMappingConfig["syncDirection"];
+  importLinearIssues: boolean;
+  autoCreateLinearIssues: boolean;
+  syncComments: boolean;
+  blockedStateName?: string;
+  statusMappings?: LinearStatusMapping[];
+  graphqlUrl?: string;
+  webhookSecretRef?: string;
+};
 
 let currentContext: PluginContext | null = null;
 const workflowStateCache = new Map<string, LinearWorkflowState[]>();
@@ -69,28 +86,50 @@ function isPullEnabled(mapping: CompanyMappingConfig): boolean {
   return mapping.syncDirection === "pull" || mapping.syncDirection === "bidirectional" || !mapping.syncDirection;
 }
 
-function normalizeConfig(config: Record<string, unknown> | null | undefined): LinearPluginConfig {
+function parseStoredMappings(config: Record<string, unknown> | null | undefined): StoredCompanyMapping[] {
   const rawMappings = Array.isArray(config?.companyMappings) ? config.companyMappings : [];
-  const companyMappings = rawMappings
+  return rawMappings
     .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object")
-    .map((entry) => ({
-      companyId: String(entry.companyId ?? "").trim(),
-      teamId: String(entry.teamId ?? "").trim(),
-      apiTokenSecretRef: String(entry.apiTokenSecretRef ?? "").trim(),
-      syncDirection: (entry.syncDirection as CompanyMappingConfig["syncDirection"]) || "bidirectional",
-      importLinearIssues: entry.importLinearIssues !== false,
-      autoCreateLinearIssues: entry.autoCreateLinearIssues !== false,
-      syncComments: entry.syncComments !== false,
-      blockedStateName: typeof entry.blockedStateName === "string" ? entry.blockedStateName.trim() : undefined,
-      graphqlUrl: typeof entry.graphqlUrl === "string" ? entry.graphqlUrl.trim() : undefined,
-      webhookSecretRef: typeof entry.webhookSecretRef === "string" ? entry.webhookSecretRef.trim() : undefined,
-    }))
-    .filter((entry) => entry.companyId && entry.teamId && entry.apiTokenSecretRef);
+    .map((entry): StoredCompanyMapping => {
+      const rawStatusMappings = Array.isArray(entry.statusMappings) ? entry.statusMappings : null;
+      return {
+        companyId: String(entry.companyId ?? "").trim(),
+        teamId: String(entry.teamId ?? "").trim(),
+        apiTokenSecretRef: String(entry.apiTokenSecretRef ?? "").trim(),
+        syncDirection: (entry.syncDirection as CompanyMappingConfig["syncDirection"]) || "bidirectional",
+        importLinearIssues: entry.importLinearIssues !== false,
+        autoCreateLinearIssues: entry.autoCreateLinearIssues !== false,
+        syncComments: entry.syncComments !== false,
+        blockedStateName: typeof entry.blockedStateName === "string" ? entry.blockedStateName.trim() : undefined,
+        statusMappings: rawStatusMappings
+          ? rawStatusMappings
+              .filter((mapping): mapping is Record<string, unknown> => Boolean(mapping) && typeof mapping === "object")
+              .map((mapping) => ({
+                linearStateId: String(mapping.linearStateId ?? "").trim(),
+                paperclipStatus: String(mapping.paperclipStatus ?? "").trim() as Issue["status"],
+              }))
+              .filter((mapping) => mapping.linearStateId && Boolean(mapping.paperclipStatus))
+          : undefined,
+        graphqlUrl: typeof entry.graphqlUrl === "string" ? entry.graphqlUrl.trim() : undefined,
+        webhookSecretRef: typeof entry.webhookSecretRef === "string" ? entry.webhookSecretRef.trim() : undefined,
+      };
+    })
+    .filter((entry) => entry.companyId && entry.apiTokenSecretRef);
+}
+
+function normalizeConfig(config: Record<string, unknown> | null | undefined): LinearPluginConfig {
+  const companyMappings: CompanyMappingConfig[] = parseStoredMappings(config)
+    .filter((entry) => Boolean(entry.teamId))
+    .map((entry) => ({ ...entry }));
   return { companyMappings };
 }
 
 async function getConfig(ctx: PluginContext): Promise<LinearPluginConfig> {
   return normalizeConfig(await ctx.config.get());
+}
+
+async function getStoredMapping(ctx: PluginContext, companyId: string): Promise<StoredCompanyMapping | null> {
+  return parseStoredMappings(await ctx.config.get()).find((entry) => entry.companyId === companyId) ?? null;
 }
 
 async function getMapping(ctx: PluginContext, companyId: string): Promise<CompanyMappingConfig | null> {
@@ -312,17 +351,44 @@ function mapLinearPriorityToPaperclip(priority: number | null | undefined): Issu
   return "medium";
 }
 
-function mapLinearStateToPaperclipStatus(remote: LinearIssue): Issue["status"] {
-  const stateType = remote.state.type.toLowerCase();
-  const stateName = remote.state.name.toLowerCase();
+function inferSuggestedPaperclipStatusForLinearState(
+  state: Pick<LinearWorkflowState, "name" | "type">,
+): Issue["status"] {
+  const stateType = state.type.toLowerCase();
+  const stateName = state.name.toLowerCase();
   if (stateType === "completed") return "done";
   if (stateType === "canceled") return "cancelled";
-  if (stateName.includes("block") || remote.inverseRelations.nodes.some((entry) => entry.type === "blocks")) {
-    return "blocked";
-  }
+  if (stateName.includes("block")) return "blocked";
   if (stateType === "backlog") return "backlog";
   if (stateType === "unstarted") return "todo";
   return "in_progress";
+}
+
+function hasExplicitStatusMappings(mapping: Pick<CompanyMappingConfig, "statusMappings">): boolean {
+  return Array.isArray(mapping.statusMappings);
+}
+
+function getConfiguredPaperclipStatusForLinearState(
+  mapping: Pick<CompanyMappingConfig, "statusMappings">,
+  linearStateId: string,
+): Issue["status"] | null {
+  if (!hasExplicitStatusMappings(mapping)) return null;
+  return mapping.statusMappings?.find((entry) => entry.linearStateId === linearStateId)?.paperclipStatus ?? null;
+}
+
+function mapLinearStateToPaperclipStatus(
+  mapping: CompanyMappingConfig,
+  remote: LinearIssue,
+): Issue["status"] | null {
+  if (hasExplicitStatusMappings(mapping)) {
+    return getConfiguredPaperclipStatusForLinearState(mapping, remote.state.id);
+  }
+  const suggested = inferSuggestedPaperclipStatusForLinearState(remote.state);
+  if (suggested !== "in_progress") return suggested;
+  if (remote.inverseRelations.nodes.some((entry) => entry.type === "blocks")) {
+    return "blocked";
+  }
+  return suggested;
 }
 
 function hasLocalAssignee(issue: Pick<Issue, "assigneeAgentId" | "assigneeUserId"> | null | undefined): boolean {
@@ -417,6 +483,14 @@ function pickWorkflowStateId(
   issue: Issue,
   mapping: CompanyMappingConfig,
 ): string | undefined {
+  if (hasExplicitStatusMappings(mapping)) {
+    const configuredStateId = mapping.statusMappings
+      ?.find((entry) => entry.paperclipStatus === issue.status && states.some((state) => state.id === entry.linearStateId))
+      ?.linearStateId;
+    if (configuredStateId) {
+      return configuredStateId;
+    }
+  }
   if (issue.status === "blocked" && mapping.blockedStateName) {
     const explicit = states.find((entry) => entry.name.toLowerCase() === mapping.blockedStateName!.toLowerCase());
     if (explicit) return explicit.id;
@@ -550,9 +624,22 @@ async function syncRemoteIssueToPaperclip(
   remoteIssue: LinearIssue,
   localIssueId?: string,
   visited = new Set<string>(),
-): Promise<Issue> {
+): Promise<Issue | null> {
   if (localIssueId) {
     await ensureNoConflictingRemoteLink(ctx, localIssueId, remoteIssue.id);
+  }
+
+  const mappedStatus = mapLinearStateToPaperclipStatus(mapping, remoteIssue);
+  if (!mappedStatus) {
+    ctx.logger.info("Skipping Linear issue because its workflow state is not mapped to a Paperclip status", {
+      companyId: mapping.companyId,
+      teamId: mapping.teamId,
+      linearIssueId: remoteIssue.id,
+      linearIdentifier: remoteIssue.identifier,
+      linearStateId: remoteIssue.state.id,
+      linearStateName: remoteIssue.state.name,
+    });
+    return null;
   }
 
   const linked = localIssueId
@@ -568,7 +655,7 @@ async function syncRemoteIssueToPaperclip(
     if (!mapping.importLinearIssues) {
       throw new Error(`Linear issue ${remoteIssue.identifier} is not linked and imports are disabled`);
     }
-    const desiredStatus = normalizeDesiredPullStatus(null, mapLinearStateToPaperclipStatus(remoteIssue), {
+    const desiredStatus = normalizeDesiredPullStatus(null, mappedStatus, {
       forCreate: true,
     });
     issue = await ctx.issues.create({
@@ -586,7 +673,7 @@ async function syncRemoteIssueToPaperclip(
     description: remoteIssue.description ?? null,
     priority: mapLinearPriorityToPaperclip(remoteIssue.priority),
   }, mapping.companyId);
-  const desiredStatus = normalizeDesiredPullStatus(updatedFields, mapLinearStateToPaperclipStatus(remoteIssue));
+  const desiredStatus = normalizeDesiredPullStatus(updatedFields, mappedStatus);
   const updated = await applyPulledStatusToIssue(ctx, mapping, updatedFields, desiredStatus, remoteIssue);
 
   await upsertIssueLink(ctx, {
@@ -790,9 +877,13 @@ async function syncCompanyFromLinear(
   const cursor = options?.full ? null : checkpoint.lastCursor ?? null;
   const remoteIssues = await listLinearIssuesUpdatedSince(ctx, mapping, cursor);
   let lastCursor = cursor;
+  let syncedIssues = 0;
 
   for (const remoteIssue of remoteIssues) {
-    await syncRemoteIssueToPaperclip(ctx, mapping, remoteIssue);
+    const synced = await syncRemoteIssueToPaperclip(ctx, mapping, remoteIssue);
+    if (synced) {
+      syncedIssues += 1;
+    }
     if (!lastCursor || remoteIssue.updatedAt > lastCursor) {
       lastCursor = remoteIssue.updatedAt;
     }
@@ -806,7 +897,7 @@ async function syncCompanyFromLinear(
   });
 
   return {
-    syncedIssues: remoteIssues.length,
+    syncedIssues,
     lastCursor,
   };
 }
@@ -977,6 +1068,51 @@ const plugin = definePlugin({
       return await getOverviewData(ctx, companyId);
     });
 
+    ctx.data.register("team-options", async (params) => {
+      const companyId = String(params.companyId ?? "");
+      if (!companyId) throw new Error("companyId is required");
+      const company = await ctx.companies.get(companyId);
+      if (!company) throw new Error("Paperclip company not found");
+      const mapping = await getStoredMapping(ctx, companyId);
+      if (!mapping?.apiTokenSecretRef) {
+        throw new Error("Save a Linear API key before loading teams");
+      }
+      clearAuthHeaderCache(mapping.apiTokenSecretRef);
+      const identifier = company.issuePrefix.trim().toUpperCase();
+      const teams = await listLinearTeams(ctx, mapping);
+      return {
+        companyId,
+        identifier,
+        totalTeamCount: teams.length,
+        teams: teams.filter((team) => team.key.trim().toUpperCase() === identifier),
+      };
+    });
+
+    ctx.data.register("workflow-state-options", async (params) => {
+      const companyId = String(params.companyId ?? "");
+      const teamId = String(params.teamId ?? "");
+      if (!companyId) throw new Error("companyId is required");
+      if (!teamId) throw new Error("teamId is required");
+      const stored = await getStoredMapping(ctx, companyId);
+      if (!stored?.apiTokenSecretRef) {
+        throw new Error("Save a Linear API key before loading workflow states");
+      }
+      const states = await listWorkflowStates(ctx, {
+        companyId,
+        teamId,
+        apiTokenSecretRef: stored.apiTokenSecretRef,
+        graphqlUrl: stored.graphqlUrl,
+      });
+      return {
+        companyId,
+        teamId,
+        states: states.map((state) => ({
+          ...state,
+          recommendedPaperclipStatus: inferSuggestedPaperclipStatusForLinearState(state),
+        })),
+      };
+    });
+
     ctx.data.register("issue-link", async (params) => {
       const companyId = String(params.companyId ?? "");
       const issueId = String(params.issueId ?? "");
@@ -1032,6 +1168,9 @@ const plugin = definePlugin({
       if (!link) throw new Error("Issue is not linked to Linear");
       const remote = await getLinearIssue(ctx, mapping, link.data.linearIssueId);
       const local = await syncRemoteIssueToPaperclip(ctx, mapping, remote, issueId);
+      if (!local) {
+        throw new Error(`Linear workflow state "${remote.state.name}" is not mapped to a Paperclip status`);
+      }
       return {
         issueId: local.id,
         linearIssueId: remote.id,
@@ -1049,6 +1188,9 @@ const plugin = definePlugin({
       const remote = await getLinearIssueByRef(ctx, mapping, linearRef);
       await ensureNoConflictingRemoteLink(ctx, issueId, remote.id);
       const local = await syncRemoteIssueToPaperclip(ctx, mapping, remote, issueId);
+      if (!local) {
+        throw new Error(`Linear workflow state "${remote.state.name}" is not mapped to a Paperclip status`);
+      }
       return {
         issueId: local.id,
         linearIssueId: remote.id,
@@ -1083,6 +1225,16 @@ const plugin = definePlugin({
       seenCompanies.add(mapping.companyId);
       if (!["pull", "push", "bidirectional"].includes(mapping.syncDirection ?? "bidirectional")) {
         errors.push(`Invalid sync direction for ${mapping.companyId}`);
+      }
+      const seenLinearStates = new Set<string>();
+      for (const statusMapping of mapping.statusMappings ?? []) {
+        if (seenLinearStates.has(statusMapping.linearStateId)) {
+          errors.push(`Duplicate Linear workflow state mapping for ${mapping.companyId}:${statusMapping.linearStateId}`);
+        }
+        seenLinearStates.add(statusMapping.linearStateId);
+        if (!ISSUE_STATUSES.includes(statusMapping.paperclipStatus)) {
+          errors.push(`Invalid Paperclip status mapping for ${mapping.companyId}:${statusMapping.linearStateId}`);
+        }
       }
     }
     return errors.length ? { ok: false, errors } : { ok: true };

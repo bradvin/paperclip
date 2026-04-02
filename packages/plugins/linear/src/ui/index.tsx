@@ -41,6 +41,10 @@ type PluginConfigData = {
     autoCreateLinearIssues?: boolean;
     syncComments?: boolean;
     blockedStateName?: string;
+    statusMappings?: Array<{
+      linearStateId: string;
+      paperclipStatus: string;
+    }>;
     graphqlUrl?: string;
     webhookSecretRef?: string;
   }>;
@@ -230,6 +234,7 @@ export function LinearSettingsPage(_props: PluginSettingsPageProps) {
           <div style={mutedStyle}>Import Linear issues: {mapping.importLinearIssues === false ? "No" : "Yes"}</div>
           <div style={mutedStyle}>Auto-create Linear issues: {mapping.autoCreateLinearIssues === false ? "No" : "Yes"}</div>
           <div style={mutedStyle}>Sync comments: {mapping.syncComments === false ? "No" : "Yes"}</div>
+          <div style={mutedStyle}>Mapped statuses: {mapping.statusMappings?.length ?? 0}</div>
           <div style={mutedStyle}>Blocked state: {mapping.blockedStateName ?? "Not set"}</div>
           <div style={mutedStyle}>GraphQL URL: {mapping.graphqlUrl ?? "Default Linear endpoint"}</div>
           <div style={mutedStyle}>API token secret ref: {mapping.apiTokenSecretRef}</div>

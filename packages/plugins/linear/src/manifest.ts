@@ -1,3 +1,4 @@
+import { ISSUE_STATUSES } from "@paperclipai/shared";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import {
   DEFAULT_POLL_SCHEDULE,
@@ -79,6 +80,24 @@ const manifest: PaperclipPluginManifestV1 = {
             blockedStateName: {
               type: "string",
               title: "Blocked Workflow State Name",
+            },
+            statusMappings: {
+              type: "array",
+              title: "Linear Workflow Status Mappings",
+              default: [],
+              items: {
+                type: "object",
+                properties: {
+                  linearStateId: { type: "string", title: "Linear Workflow State ID" },
+                  paperclipStatus: {
+                    type: "string",
+                    title: "Paperclip Status",
+                    enum: [...ISSUE_STATUSES],
+                  },
+                },
+                required: ["linearStateId", "paperclipStatus"],
+                additionalProperties: false,
+              },
             },
             graphqlUrl: {
               type: "string",
