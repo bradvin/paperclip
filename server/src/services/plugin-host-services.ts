@@ -692,6 +692,32 @@ export function buildHostServices(
         const project = await projects.getById(params.projectId);
         return (inCompany(project, companyId) ? project : null) as Project | null;
       },
+      async create(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return await projects.create(companyId, {
+          name: params.name,
+          description: params.description ?? null,
+          status: params.status ?? "backlog",
+          targetDate: params.targetDate ?? null,
+          color: params.color ?? null,
+        }) as Project;
+      },
+      async update(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const project = await projects.getById(params.projectId);
+        if (!inCompany(project, companyId)) {
+          throw new Error(`Project not found: ${params.projectId}`);
+        }
+        const updated = await projects.update(params.projectId, {
+          ...params.patch,
+        });
+        if (!updated) {
+          throw new Error(`Project not found: ${params.projectId}`);
+        }
+        return updated as Project;
+      },
       async listWorkspaces(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);

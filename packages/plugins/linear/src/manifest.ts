@@ -21,6 +21,9 @@ const manifest: PaperclipPluginManifestV1 = {
   categories: ["connector", "automation", "ui"],
   capabilities: [
     "companies.read",
+    "projects.read",
+    "projects.create",
+    "projects.update",
     "issues.read",
     "issues.create",
     "issues.update",
@@ -97,7 +100,7 @@ const manifest: PaperclipPluginManifestV1 = {
                   syncMode: {
                     type: "string",
                     title: "Sync Mode",
-                    enum: ["pull", "push", "bidirectional"],
+                    enum: ["pull", "push", "bidirectional", "disabled"],
                     default: "bidirectional",
                   },
                 },

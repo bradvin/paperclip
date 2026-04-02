@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { Company, Issue } from "@paperclipai/shared";
+import type { Company, Issue, Project } from "@paperclipai/shared";
 import { ENTITY_TYPES } from "../src/constants.js";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
@@ -29,6 +29,10 @@ type LinearIssueResponse = {
     name: string;
     type: string;
   };
+  project: {
+    id: string;
+    name: string;
+  } | null;
   comments: {
     nodes: Array<{
       id: string;
@@ -91,7 +95,7 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "id" | "companyId" 
   return {
     id: overrides.id,
     companyId: overrides.companyId,
-    projectId: null,
+    projectId: overrides.projectId ?? null,
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
@@ -130,6 +134,42 @@ function createIssue(overrides: Partial<Issue> & Pick<Issue, "id" | "companyId" 
   };
 }
 
+function createProject(overrides: Partial<Project> & Pick<Project, "id" | "companyId" | "name">): Project {
+  return {
+    id: overrides.id,
+    companyId: overrides.companyId,
+    urlKey: overrides.urlKey ?? overrides.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    goalId: null,
+    goalIds: [],
+    goals: [],
+    name: overrides.name,
+    description: overrides.description ?? null,
+    status: overrides.status ?? "planned",
+    leadAgentId: null,
+    targetDate: overrides.targetDate ?? null,
+    color: overrides.color ?? null,
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
+    codebase: overrides.codebase ?? {
+      workspaceId: null,
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: null,
+      repoName: null,
+      localFolder: null,
+      managedFolder: `/tmp/projects/${overrides.id}`,
+      effectiveLocalFolder: `/tmp/projects/${overrides.id}`,
+      origin: "managed_checkout",
+    },
+    workspaces: overrides.workspaces ?? [],
+    primaryWorkspace: overrides.primaryWorkspace ?? null,
+    archivedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+}
+
 function createRemoteIssue(overrides: Partial<LinearIssueResponse> & Pick<LinearIssueResponse, "id" | "identifier" | "title">): LinearIssueResponse {
   return {
     id: overrides.id,
@@ -150,6 +190,7 @@ function createRemoteIssue(overrides: Partial<LinearIssueResponse> & Pick<Linear
       name: "In Progress",
       type: "started",
     },
+    project: overrides.project ?? null,
     comments: overrides.comments ?? { nodes: [] },
     relations: overrides.relations ?? { nodes: [] },
     inverseRelations: overrides.inverseRelations ?? { nodes: [] },
@@ -523,6 +564,200 @@ describe("Linear plugin", () => {
     const importedTarget = importedTargetId ? await harness.ctx.issues.get(importedTargetId, "co_1") : null;
     expect(importedTarget?.title).toBe("Imported target issue");
     expect(importedTarget?.blockedBy?.[0]?.id).toBe("iss_source");
+  });
+
+  it("imports Linear projects from pulled issues and reuses them across multiple issues", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+      projects: [],
+    });
+
+    const sharedProject = {
+      id: "linear_project_1",
+      name: "Platform",
+    };
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                createRemoteIssue({
+                  id: "linear_issue_1",
+                  identifier: "ACME-701",
+                  title: "Imported project issue one",
+                  project: sharedProject,
+                }),
+                createRemoteIssue({
+                  id: "linear_issue_2",
+                  identifier: "ACME-702",
+                  title: "Imported project issue two",
+                  updatedAt: "2026-03-20T10:01:00.000Z",
+                  project: sharedProject,
+                }),
+              ],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    const projects = await harness.ctx.projects.list({ companyId: "co_1" });
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.name).toBe("Platform");
+
+    const issues = await harness.ctx.issues.list({ companyId: "co_1" });
+    expect(issues).toHaveLength(2);
+    expect(issues[0]?.projectId).toBe(projects[0]?.id);
+    expect(issues[1]?.projectId).toBe(projects[0]?.id);
+  });
+
+  it("pushes linked Paperclip project assignments back to Linear", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      projects: [
+        createProject({
+          id: "proj_1",
+          companyId: "co_1",
+          name: "Platform",
+        }),
+      ],
+      issues: [
+        createIssue({
+          id: "iss_project_push",
+          companyId: "co_1",
+          title: "Push assigned project",
+          projectId: "proj_1",
+        }),
+      ],
+    });
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.projectLink,
+      scopeKind: "project",
+      scopeId: "proj_1",
+      externalId: "linear_project_1",
+      title: "Platform",
+      status: "linked",
+      data: {
+        companyId: "co_1",
+        paperclipProjectId: "proj_1",
+        linearProjectId: "linear_project_1",
+        linearProjectName: "Platform",
+        lastSyncedAt: NOW.toISOString(),
+      },
+    });
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.issueLink,
+      scopeKind: "issue",
+      scopeId: "iss_project_push",
+      externalId: "linear_issue_1",
+      title: "ACME-703",
+      status: "linked",
+      data: {
+        companyId: "co_1",
+        teamId: "team_1",
+        paperclipIssueId: "iss_project_push",
+        linearIssueId: "linear_issue_1",
+        linearIdentifier: "ACME-703",
+        linearUrl: "https://linear.app/acme/issue/ACME-703/push-assigned-project",
+        lastSyncedAt: NOW.toISOString(),
+      },
+    });
+
+    const issueUpdateCalls: Array<Record<string, unknown>> = [];
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      const query = request.query;
+      if (query.includes("workflowStates")) {
+        return Response.json({
+          data: {
+            workflowStates: {
+              nodes: [
+                { id: "state_todo", name: "Todo", type: "unstarted" },
+                { id: "state_done", name: "Done", type: "completed" },
+              ],
+            },
+          },
+        });
+      }
+      if (query.includes("issueUpdate")) {
+        issueUpdateCalls.push(request.variables?.input as Record<string, unknown>);
+        return Response.json({ data: { issueUpdate: { success: true } } });
+      }
+      if (query.includes("query LinearIssue($id: String!)")) {
+        return Response.json({
+          data: {
+            issue: createRemoteIssue({
+              id: "linear_issue_1",
+              identifier: "ACME-703",
+              title: "Push assigned project",
+              project: {
+                id: "linear_project_1",
+                name: "Platform",
+              },
+              state: {
+                id: "state_todo",
+                name: "Todo",
+                type: "unstarted",
+              },
+            }),
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${query}`);
+    }));
+
+    await harness.performAction("push-issue", {
+      companyId: "co_1",
+      issueId: "iss_project_push",
+    });
+
+    expect(issueUpdateCalls).toHaveLength(1);
+    expect(issueUpdateCalls[0]).toMatchObject({
+      projectId: "linear_project_1",
+    });
   });
 
   it("creates completed Linear issues directly as done during pull", async () => {

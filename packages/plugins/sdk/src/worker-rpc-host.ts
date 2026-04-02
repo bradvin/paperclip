@@ -542,6 +542,25 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("projects.get", { projectId, companyId });
         },
 
+        async create(input) {
+          return callHost("projects.create", {
+            companyId: input.companyId,
+            name: input.name,
+            description: input.description,
+            status: input.status,
+            targetDate: input.targetDate,
+            color: input.color,
+          });
+        },
+
+        async update(projectId: string, patch, companyId: string) {
+          return callHost("projects.update", {
+            projectId,
+            patch,
+            companyId,
+          });
+        },
+
         async listWorkspaces(projectId: string, companyId: string) {
           return callHost("projects.listWorkspaces", { projectId, companyId });
         },

@@ -39,6 +39,11 @@ export interface LinearTeam {
   name: string;
 }
 
+export interface LinearProject {
+  id: string;
+  name: string;
+}
+
 export interface LinearIssueRef {
   id: string;
   identifier: string;
@@ -76,6 +81,7 @@ export interface LinearIssue {
     name: string;
     type: string;
   };
+  project: LinearProject | null;
   comments: {
     nodes: LinearComment[];
   };
@@ -108,6 +114,18 @@ export interface LinearIssueLinkData {
   lastPushedAt?: string;
   lastRemoteUpdatedAt?: string;
   lastImportedFingerprint?: string;
+  unlinkedAt?: string | null;
+}
+
+export interface LinearProjectLinkData {
+  [key: string]: unknown;
+  companyId: string;
+  paperclipProjectId: string;
+  linearProjectId: string;
+  linearProjectName: string;
+  lastSyncedAt?: string;
+  lastPulledAt?: string;
+  lastPushedAt?: string;
   unlinkedAt?: string | null;
 }
 

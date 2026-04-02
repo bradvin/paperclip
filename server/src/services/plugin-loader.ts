@@ -1658,9 +1658,10 @@ export function pluginLoader(
    * `error` in the database when activation fails.
    */
   async function activatePlugin(plugin: PluginRecord): Promise<PluginLoadResult> {
-    const manifest = plugin.manifestJson;
-    const pluginId = plugin.id;
-    const pluginKey = plugin.pluginKey;
+    let activePlugin = plugin;
+    let manifest = activePlugin.manifestJson;
+    const pluginId = activePlugin.id;
+    const pluginKey = activePlugin.pluginKey;
 
     const registered: PluginLoadResult["registered"] = {
       worker: false,
@@ -1673,7 +1674,7 @@ export function pluginLoader(
     // Guard: runtime services must exist (callers already checked)
     if (!runtimeServices) {
       return {
-        plugin,
+        plugin: activePlugin,
         success: false,
         error: "No runtime services available",
         registered,
@@ -1692,15 +1693,44 @@ export function pluginLoader(
     } = runtimeServices;
 
     try {
+      if (activePlugin.packagePath) {
+        const pkgJson = await readPackageJson(activePlugin.packagePath);
+        const manifestPath = pkgJson ? resolveManifestPath(activePlugin.packagePath, pkgJson) : null;
+        const liveManifest = manifestPath && existsSync(manifestPath)
+          ? await loadManifestFromPath(manifestPath)
+          : null;
+        if (liveManifest) {
+          if (liveManifest.id !== activePlugin.pluginKey) {
+            throw new Error(
+              `Local plugin manifest id "${liveManifest.id}" does not match installed plugin key "${activePlugin.pluginKey}"`,
+            );
+          }
+          const manifestChanged =
+            activePlugin.version !== liveManifest.version ||
+            JSON.stringify(activePlugin.manifestJson) !== JSON.stringify(liveManifest);
+          if (manifestChanged) {
+            activePlugin = (await registry.update(activePlugin.id, {
+              version: liveManifest.version,
+              manifest: liveManifest,
+            })) ?? {
+              ...activePlugin,
+              version: liveManifest.version,
+              manifestJson: liveManifest,
+            };
+            manifest = activePlugin.manifestJson;
+          }
+        }
+      }
+
       log.info(
-        { pluginId, pluginKey, version: plugin.version },
+        { pluginId, pluginKey, version: activePlugin.version },
         "plugin-loader: activating plugin",
       );
 
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
-      const workerEntrypoint = resolveWorkerEntrypoint(plugin, localPluginDir);
+      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
 
       // ------------------------------------------------------------------
       // 2. Build host handlers for this plugin
@@ -1737,7 +1767,7 @@ export function pluginLoader(
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 
@@ -1828,13 +1858,13 @@ export function pluginLoader(
         {
           pluginId,
           pluginKey,
-          version: plugin.version,
+          version: activePlugin.version,
           registered,
         },
         "plugin-loader: plugin activated successfully",
       );
 
-      return { plugin, success: true, registered };
+      return { plugin: activePlugin, success: true, registered };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
@@ -1858,7 +1888,7 @@ export function pluginLoader(
       }
 
       return {
-        plugin,
+        plugin: activePlugin,
         success: false,
         error: errorMessage,
         registered,

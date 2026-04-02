@@ -118,6 +118,51 @@ function isInCompany<T extends { companyId: string | null | undefined }>(
   return Boolean(record && record.companyId === companyId);
 }
 
+function createProjectRecord(input: {
+  id: string;
+  companyId: string;
+  name: string;
+  description?: string | null;
+  status?: Project["status"];
+  targetDate?: string | null;
+  color?: string | null;
+}): Project {
+  const now = new Date();
+  return {
+    id: input.id,
+    companyId: input.companyId,
+    urlKey: input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || input.id,
+    goalId: null,
+    goalIds: [],
+    goals: [],
+    name: input.name,
+    description: input.description ?? null,
+    status: input.status ?? "backlog",
+    leadAgentId: null,
+    targetDate: input.targetDate ?? null,
+    color: input.color ?? null,
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
+    codebase: {
+      workspaceId: null,
+      repoUrl: null,
+      repoRef: null,
+      defaultRef: null,
+      repoName: null,
+      localFolder: null,
+      managedFolder: `/tmp/projects/${input.id}`,
+      effectiveLocalFolder: `/tmp/projects/${input.id}`,
+      origin: "managed_checkout",
+    },
+    workspaces: [],
+    primaryWorkspace: null,
+    archivedAt: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 /**
  * Create an in-memory host harness for plugin worker tests.
  *
@@ -292,6 +337,32 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "projects.read");
         const project = projects.get(projectId);
         return isInCompany(project, companyId) ? project : null;
+      },
+      async create(input) {
+        requireCapability(manifest, capabilitySet, "projects.create");
+        const record = createProjectRecord({
+          id: randomUUID(),
+          companyId: input.companyId,
+          name: input.name,
+          description: input.description,
+          status: input.status,
+          targetDate: input.targetDate,
+          color: input.color,
+        });
+        projects.set(record.id, record);
+        return record;
+      },
+      async update(projectId, patch, companyId) {
+        requireCapability(manifest, capabilitySet, "projects.update");
+        const record = projects.get(projectId);
+        if (!isInCompany(record, companyId)) throw new Error(`Project not found: ${projectId}`);
+        const updated: Project = {
+          ...record,
+          ...patch,
+          updatedAt: new Date(),
+        };
+        projects.set(projectId, updated);
+        return updated;
       },
       async listWorkspaces(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "project.workspaces.read");

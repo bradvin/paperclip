@@ -35,6 +35,7 @@ import type {
   LinearIssue,
   LinearIssueLinkData,
   LinearPluginConfig,
+  LinearProjectLinkData,
   LinearStatusMapping,
   LinearStatusSyncMode,
   LinearWorkflowState,
@@ -173,6 +174,13 @@ async function listIssueLinks(ctx: PluginContext): Promise<Array<PluginEntityRec
     .map((record) => ({ ...record, data: parseEntityData<LinearIssueLinkData>(record) }));
 }
 
+async function listProjectLinks(ctx: PluginContext): Promise<Array<PluginEntityRecord & { data: LinearProjectLinkData }>> {
+  const records = await ctx.entities.list({ entityType: ENTITY_TYPES.projectLink, limit: 5000 });
+  return records
+    .filter(isActiveLinkRecord)
+    .map((record) => ({ ...record, data: parseEntityData<LinearProjectLinkData>(record) }));
+}
+
 async function listCommentLinksForIssue(
   ctx: PluginContext,
   issueId: string,
@@ -223,6 +231,42 @@ async function getIssueLinkByLinearIssueId(
   return record ?? null;
 }
 
+async function getProjectLinkByLocalProjectId(
+  ctx: PluginContext,
+  projectId: string,
+): Promise<(PluginEntityRecord & { data: LinearProjectLinkData }) | null> {
+  const records = await listProjectLinks(ctx);
+  const record = sortNewestFirst(
+    records.filter((entry) => entry.scopeKind === "project" && entry.scopeId === projectId),
+  )[0];
+  return record ?? null;
+}
+
+async function getProjectLinkByLinearProjectId(
+  ctx: PluginContext,
+  linearProjectId: string,
+): Promise<(PluginEntityRecord & { data: LinearProjectLinkData }) | null> {
+  const byExternalId = await ctx.entities.list({
+    entityType: ENTITY_TYPES.projectLink,
+    externalId: linearProjectId,
+    limit: 10,
+  });
+  const matchingExternalRecord = sortNewestFirst(
+    byExternalId
+      .filter(isActiveLinkRecord)
+      .map((record) => ({ ...record, data: parseEntityData<LinearProjectLinkData>(record) }))
+      .filter((record) => record.data.linearProjectId === linearProjectId || record.externalId === linearProjectId),
+  )[0];
+  if (matchingExternalRecord) {
+    return matchingExternalRecord;
+  }
+  const records = await listProjectLinks(ctx);
+  const record = sortNewestFirst(
+    records.filter((entry) => entry.data.linearProjectId === linearProjectId),
+  )[0];
+  return record ?? null;
+}
+
 async function upsertIssueLink(
   ctx: PluginContext,
   input: LinearIssueLinkData,
@@ -261,6 +305,46 @@ async function upsertIssueLink(
     data: input,
   });
   return { ...record, data: parseEntityData<LinearIssueLinkData>(record) };
+}
+
+async function upsertProjectLink(
+  ctx: PluginContext,
+  input: LinearProjectLinkData,
+): Promise<PluginEntityRecord & { data: LinearProjectLinkData }> {
+  const existingByRemote = await getProjectLinkByLinearProjectId(ctx, input.linearProjectId);
+  const existingByLocal = await getProjectLinkByLocalProjectId(ctx, input.paperclipProjectId);
+
+  if (
+    !input.unlinkedAt &&
+    existingByLocal &&
+    existingByLocal.data.linearProjectId !== input.linearProjectId
+  ) {
+    const retiredAt = input.lastSyncedAt ?? nowIso();
+    await ctx.entities.upsert({
+      entityType: ENTITY_TYPES.projectLink,
+      scopeKind: "project",
+      scopeId: existingByLocal.data.paperclipProjectId,
+      externalId: existingByLocal.externalId ?? existingByLocal.data.linearProjectId,
+      title: existingByLocal.data.linearProjectName,
+      status: "unlinked",
+      data: {
+        ...existingByLocal.data,
+        lastSyncedAt: retiredAt,
+        unlinkedAt: retiredAt,
+      },
+    });
+  }
+
+  const record = await ctx.entities.upsert({
+    entityType: ENTITY_TYPES.projectLink,
+    scopeKind: "project",
+    scopeId: input.paperclipProjectId,
+    externalId: existingByRemote?.externalId ?? input.linearProjectId,
+    title: input.linearProjectName,
+    status: input.unlinkedAt ? "unlinked" : "linked",
+    data: input,
+  });
+  return { ...record, data: parseEntityData<LinearProjectLinkData>(record) };
 }
 
 async function upsertCommentLink(
@@ -340,6 +424,7 @@ function fingerprintIssue(issue: Issue): string {
     description: issue.description,
     status: issue.status,
     priority: issue.priority,
+    projectId: issue.projectId,
     blocks,
     blockedBy,
   });
@@ -597,6 +682,78 @@ async function ensurePaperclipIssue(ctx: PluginContext, companyId: string, issue
   return issue;
 }
 
+async function ensurePaperclipProjectForRemote(
+  ctx: PluginContext,
+  mapping: CompanyMappingConfig,
+  remoteIssue: LinearIssue,
+): Promise<string | null> {
+  const remoteProject = remoteIssue.project;
+  if (!remoteProject) {
+    return null;
+  }
+
+  const linked = await getProjectLinkByLinearProjectId(ctx, remoteProject.id);
+  if (linked) {
+    const localProject = await ctx.projects.get(linked.data.paperclipProjectId, mapping.companyId);
+    if (localProject) {
+      if (localProject.name !== remoteProject.name) {
+        const renamed = await ctx.projects.update(localProject.id, {
+          name: remoteProject.name,
+        }, mapping.companyId);
+        await upsertProjectLink(ctx, {
+          ...linked.data,
+          paperclipProjectId: renamed.id,
+          linearProjectName: remoteProject.name,
+          lastPulledAt: nowIso(),
+          lastSyncedAt: nowIso(),
+        });
+        return renamed.id;
+      }
+      await upsertProjectLink(ctx, {
+        ...linked.data,
+        paperclipProjectId: localProject.id,
+        linearProjectName: remoteProject.name,
+        lastPulledAt: nowIso(),
+        lastSyncedAt: nowIso(),
+      });
+      return localProject.id;
+    }
+  }
+
+  const created = await ctx.projects.create({
+    companyId: mapping.companyId,
+    name: remoteProject.name,
+    status: "planned",
+  });
+  await upsertProjectLink(ctx, {
+    companyId: mapping.companyId,
+    paperclipProjectId: created.id,
+    linearProjectId: remoteProject.id,
+    linearProjectName: remoteProject.name,
+    lastPulledAt: nowIso(),
+    lastSyncedAt: nowIso(),
+  });
+  return created.id;
+}
+
+async function resolveLinearProjectIdForPaperclipIssue(
+  ctx: PluginContext,
+  mapping: CompanyMappingConfig,
+  issue: Pick<Issue, "projectId">,
+): Promise<string | null | undefined> {
+  if (issue.projectId === null) {
+    return null;
+  }
+  if (!issue.projectId) {
+    return undefined;
+  }
+  const projectLink = await getProjectLinkByLocalProjectId(ctx, issue.projectId);
+  if (!projectLink || projectLink.data.companyId !== mapping.companyId) {
+    return undefined;
+  }
+  return projectLink.data.linearProjectId;
+}
+
 async function listPaperclipComments(ctx: PluginContext, issueId: string, companyId: string): Promise<IssueComment[]> {
   return await ctx.issues.listComments(issueId, companyId);
 }
@@ -692,6 +849,7 @@ async function syncRemoteIssueToPaperclip(
     await ensureNoConflictingRemoteLink(ctx, localIssueId, remoteIssue.id);
   }
 
+  const localProjectId = await ensurePaperclipProjectForRemote(ctx, mapping, remoteIssue);
   const mappedStatus = mapLinearStateToPaperclipStatus(mapping, remoteIssue);
   if (!mappedStatus) {
     ctx.logger.info("Skipping Linear issue because its workflow state is not mapped to a Paperclip status", {
@@ -723,6 +881,7 @@ async function syncRemoteIssueToPaperclip(
     });
     issue = await ctx.issues.create({
       companyId: mapping.companyId,
+      projectId: localProjectId ?? undefined,
       title: remoteIssue.title,
       description: remoteIssue.description ?? undefined,
       status: desiredStatus,
@@ -732,6 +891,7 @@ async function syncRemoteIssueToPaperclip(
 
   await markSuppressWindow(ctx, issue.id, "issue-suppress-until", 5000);
   const updatedFields = await ctx.issues.update(issue.id, {
+    projectId: localProjectId,
     title: remoteIssue.title,
     description: remoteIssue.description ?? null,
     priority: mapLinearPriorityToPaperclip(remoteIssue.priority),
@@ -802,10 +962,12 @@ async function ensureRemoteIssueLink(
 
   const states = await getWorkflowStatesForMapping(ctx, mapping);
   const stateId = pickWorkflowStateId(states, issue, mapping);
+  const projectId = (await resolveLinearProjectIdForPaperclipIssue(ctx, mapping, issue)) ?? undefined;
   const remoteIssue = await createLinearIssue(ctx, mapping, {
     title: issue.title,
     description: issue.description,
     stateId,
+    projectId,
     priority: mapPaperclipPriorityToLinear(issue),
   });
   const link = await upsertIssueLink(ctx, {
@@ -887,10 +1049,12 @@ async function pushPaperclipIssueToLinear(
   const { issue, link } = await ensureRemoteIssueLink(ctx, mapping, localIssueId, allowCreate);
   const states = await getWorkflowStatesForMapping(ctx, mapping);
   const stateId = pickWorkflowStateId(states, issue, mapping);
+  const projectId = await resolveLinearProjectIdForPaperclipIssue(ctx, mapping, issue);
   const updatedRemote = await updateLinearIssue(ctx, mapping, link.data.linearIssueId, {
     title: issue.title,
     description: issue.description,
     stateId,
+    projectId,
     priority: mapPaperclipPriorityToLinear(issue),
   });
   await reconcilePaperclipRelationsToLinear(ctx, mapping, issue, updatedRemote);

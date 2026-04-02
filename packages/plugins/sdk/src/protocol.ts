@@ -544,6 +544,31 @@ export interface WorkerToHostMethods {
     params: { projectId: string; companyId: string },
     result: Project | null,
   ];
+  "projects.create": [
+    params: {
+      companyId: string;
+      name: string;
+      description?: string | null;
+      status?: Project["status"];
+      targetDate?: string | null;
+      color?: string | null;
+    },
+    result: Project,
+  ];
+  "projects.update": [
+    params: {
+      projectId: string;
+      patch: {
+        name?: string;
+        description?: string | null;
+        status?: Project["status"];
+        targetDate?: string | null;
+        color?: string | null;
+      };
+      companyId: string;
+    },
+    result: Project,
+  ];
   "projects.listWorkspaces": [
     params: { projectId: string; companyId: string },
     result: PluginWorkspace[],

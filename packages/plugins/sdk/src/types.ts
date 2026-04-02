@@ -627,6 +627,31 @@ export interface PluginProjectsClient {
   get(projectId: string, companyId: string): Promise<Project | null>;
 
   /**
+   * Create a Paperclip project.
+   *
+   * Requires the `projects.create` capability.
+   */
+  create(input: {
+    companyId: string;
+    name: string;
+    description?: string | null;
+    status?: Project["status"];
+    targetDate?: string | null;
+    color?: string | null;
+  }): Promise<Project>;
+
+  /**
+   * Update a Paperclip project.
+   *
+   * Requires the `projects.update` capability.
+   */
+  update(
+    projectId: string,
+    patch: Partial<Pick<Project, "name" | "description" | "status" | "targetDate" | "color">>,
+    companyId: string,
+  ): Promise<Project>;
+
+  /**
    * List all workspaces attached to a project.
    *
    * @param projectId - UUID of the project
@@ -882,7 +907,7 @@ export interface PluginIssuesClient {
     issueId: string,
     patch: Partial<Pick<
       Issue,
-      "title" | "description" | "status" | "priority" | "assigneeAgentId"
+      "title" | "description" | "status" | "priority" | "assigneeAgentId" | "projectId"
     >>,
     companyId: string,
   ): Promise<Issue>;

@@ -26,6 +26,7 @@ export const EXPORT_NAMES = {
 
 export const ENTITY_TYPES = {
   issueLink: "linear-issue-link",
+  projectLink: "linear-project-link",
   commentLink: "linear-comment-link",
 } as const;
 

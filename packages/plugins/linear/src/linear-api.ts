@@ -62,6 +62,10 @@ const ISSUE_SELECTION = `
     name
     type
   }
+  project {
+    id
+    name
+  }
   comments(first: 100) {
     nodes {
       id
@@ -349,6 +353,7 @@ export async function createLinearIssue(
     title: string;
     description?: string | null;
     stateId?: string;
+    projectId?: string | null;
     parentId?: string;
     priority?: number;
   },
@@ -369,6 +374,7 @@ export async function createLinearIssue(
         title: input.title,
         description: input.description || undefined,
         stateId: input.stateId,
+        projectId: input.projectId,
         parentId: input.parentId,
         priority: input.priority,
       },
@@ -385,6 +391,7 @@ export async function updateLinearIssue(
     title?: string;
     description?: string | null;
     stateId?: string;
+    projectId?: string | null;
     parentId?: string | null;
     priority?: number;
   },
