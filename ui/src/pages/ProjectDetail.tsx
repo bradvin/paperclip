@@ -304,6 +304,35 @@ export function ProjectDetail() {
     },
   });
 
+  const deleteAllProjectIssues = useMutation({
+    mutationFn: () =>
+      projectsApi.deleteAllIssues(projectLookupRef, resolvedCompanyId ?? lookupCompanyId),
+    onSuccess: (result) => {
+      invalidateProject();
+      const currentProjectId = project?.id ?? projectLookupRef;
+      if (resolvedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(resolvedCompanyId, currentProjectId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.activity(resolvedCompanyId) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(resolvedCompanyId) });
+      }
+      pushToast({
+        title:
+          result.deletedIssueCount === 0
+            ? "No project issues to delete"
+            : `Deleted ${result.deletedIssueCount} ${result.deletedIssueCount === 1 ? "issue" : "issues"}`,
+        tone: "success",
+      });
+    },
+    onError: () => {
+      pushToast({
+        title: "Failed to delete project issues",
+        tone: "error",
+      });
+    },
+  });
+
   const uploadImage = useMutation({
     mutationFn: async (file: File) => {
       if (!resolvedCompanyId) throw new Error("No company selected");
@@ -598,6 +627,8 @@ export function ProjectDetail() {
             getFieldSaveState={(field) => fieldSaveStates[field] ?? "idle"}
             onArchive={(archived) => archiveProject.mutate(archived)}
             archivePending={archiveProject.isPending}
+            onDeleteAllIssues={() => deleteAllProjectIssues.mutate()}
+            deleteAllIssuesPending={deleteAllProjectIssues.isPending}
           />
         </div>
       )}

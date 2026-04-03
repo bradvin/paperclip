@@ -33,6 +33,7 @@ const ACTION_VERBS: Record<string, string> = {
   "project.created": "created",
   "project.updated": "updated",
   "project.deleted": "deleted",
+  "project.issues_deleted": "deleted issues from",
   "goal.created": "created",
   "goal.updated": "updated",
   "goal.deleted": "deleted",

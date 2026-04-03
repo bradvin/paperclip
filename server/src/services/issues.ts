@@ -1409,6 +1409,86 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
+    removeByProject: (projectId: string) =>
+      db.transaction(async (tx) => {
+        const existingIssues = await tx
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+          })
+          .from(issues)
+          .where(eq(issues.projectId, projectId));
+
+        if (existingIssues.length === 0) {
+          return {
+            projectId,
+            companyId: null,
+            deletedIssueCount: 0,
+            attachments: [] as Array<{ id: string; companyId: string; objectKey: string }>,
+          };
+        }
+
+        const issueIds = existingIssues.map((issue) => issue.id);
+        const attachmentRows = await tx
+          .select({
+            id: issueAttachments.id,
+            companyId: issueAttachments.companyId,
+            objectKey: assets.objectKey,
+            assetId: issueAttachments.assetId,
+          })
+          .from(issueAttachments)
+          .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+          .where(inArray(issueAttachments.issueId, issueIds));
+        const issueDocumentIds = await tx
+          .select({ documentId: issueDocuments.documentId })
+          .from(issueDocuments)
+          .where(inArray(issueDocuments.issueId, issueIds));
+
+        await tx
+          .update(issues)
+          .set({ parentId: null, updatedAt: new Date() })
+          .where(inArray(issues.parentId, issueIds));
+
+        await tx
+          .update(costEvents)
+          .set({ issueId: null })
+          .where(inArray(costEvents.issueId, issueIds));
+
+        await tx
+          .update(financeEvents)
+          .set({ issueId: null })
+          .where(inArray(financeEvents.issueId, issueIds));
+
+        await tx.delete(issueReadStates).where(inArray(issueReadStates.issueId, issueIds));
+        await tx.delete(issueComments).where(inArray(issueComments.issueId, issueIds));
+
+        const removedIssues = await tx
+          .delete(issues)
+          .where(eq(issues.projectId, projectId))
+          .returning({ id: issues.id });
+
+        const attachmentAssetIds = attachmentRows.map((row) => row.assetId);
+        if (attachmentAssetIds.length > 0) {
+          await tx.delete(assets).where(inArray(assets.id, attachmentAssetIds));
+        }
+
+        const documentIds = issueDocumentIds.map((row) => row.documentId);
+        if (documentIds.length > 0) {
+          await tx.delete(documents).where(inArray(documents.id, documentIds));
+        }
+
+        return {
+          projectId,
+          companyId: existingIssues[0]?.companyId ?? null,
+          deletedIssueCount: removedIssues.length,
+          attachments: attachmentRows.map((row) => ({
+            id: row.id,
+            companyId: row.companyId,
+            objectKey: row.objectKey,
+          })),
+        };
+      }),
+
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })

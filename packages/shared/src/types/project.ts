@@ -70,3 +70,8 @@ export interface Project {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface DeleteProjectIssuesResult {
+  projectId: string;
+  deletedIssueCount: number;
+}

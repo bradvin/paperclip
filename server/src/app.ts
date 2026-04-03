@@ -138,7 +138,7 @@ export async function createApp(
   api.use("/companies", companyRoutes(db));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
-  api.use(projectRoutes(db));
+  api.use(projectRoutes(db, opts.storageService));
   api.use(issueRoutes(db, opts.storageService));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));

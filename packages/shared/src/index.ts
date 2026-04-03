@@ -137,6 +137,7 @@ export type {
   Project,
   ProjectCodebase,
   ProjectCodebaseOrigin,
+  DeleteProjectIssuesResult,
   ProjectGoalRef,
   ProjectWorkspace,
   ExecutionWorkspace,

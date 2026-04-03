@@ -1,5 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
+import type { StorageService } from "../storage/types.js";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -8,13 +9,15 @@ import {
   updateProjectWorkspaceSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { projectService, logActivity } from "../services/index.js";
+import { issueService, projectService, logActivity } from "../services/index.js";
 import { conflict } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
-export function projectRoutes(db: Db) {
+export function projectRoutes(db: Db, storage: StorageService) {
   const router = Router();
   const svc = projectService(db);
+  const issuesSvc = issueService(db);
 
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
@@ -151,6 +154,48 @@ export function projectRoutes(db: Db) {
     assertCompanyAccess(req, existing.companyId);
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
+  });
+
+  router.delete("/projects/:id/issues", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const result = await issuesSvc.removeByProject(id);
+    for (const attachment of result.attachments) {
+      try {
+        await storage.deleteObject(attachment.companyId, attachment.objectKey);
+      } catch (err) {
+        logger.warn(
+          { err, projectId: id, attachmentId: attachment.id },
+          "failed to delete attachment object during project issue delete",
+        );
+      }
+    }
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "project.issues_deleted",
+      entityType: "project",
+      entityId: existing.id,
+      details: {
+        deletedIssueCount: result.deletedIssueCount,
+      },
+    });
+
+    res.json({
+      projectId: existing.id,
+      deletedIssueCount: result.deletedIssueCount,
+    });
   });
 
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {

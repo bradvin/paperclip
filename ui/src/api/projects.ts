@@ -1,4 +1,4 @@
-import type { Project, ProjectWorkspace } from "@paperclipai/shared";
+import type { DeleteProjectIssuesResult, Project, ProjectWorkspace } from "@paperclipai/shared";
 import { api } from "./client";
 
 function withCompanyScope(path: string, companyId?: string) {
@@ -29,5 +29,7 @@ export const projectsApi = {
     ),
   removeWorkspace: (projectId: string, workspaceId: string, companyId?: string) =>
     api.delete<ProjectWorkspace>(projectPath(projectId, companyId, `/workspaces/${encodeURIComponent(workspaceId)}`)),
+  deleteAllIssues: (id: string, companyId?: string) =>
+    api.delete<DeleteProjectIssuesResult>(projectPath(id, companyId, "/issues")),
   remove: (id: string, companyId?: string) => api.delete<Project>(projectPath(id, companyId)),
 };

@@ -34,6 +34,8 @@ interface ProjectPropertiesProps {
   getFieldSaveState?: (field: ProjectConfigFieldKey) => ProjectFieldSaveState;
   onArchive?: (archived: boolean) => void;
   archivePending?: boolean;
+  onDeleteAllIssues?: () => void;
+  deleteAllIssuesPending?: boolean;
 }
 
 export type ProjectFieldSaveState = "idle" | "saving" | "saved" | "error";
@@ -215,7 +217,74 @@ function ArchiveDangerZone({
   );
 }
 
-export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSaveState, onArchive, archivePending }: ProjectPropertiesProps) {
+function DeleteAllIssuesDangerZone({
+  project,
+  onDeleteAllIssues,
+  deleteAllIssuesPending,
+}: {
+  project: Project;
+  onDeleteAllIssues: () => void;
+  deleteAllIssuesPending?: boolean;
+}) {
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+      <p className="text-sm text-muted-foreground">
+        Delete every issue in this project. The project stays in place, but all of its issues are removed permanently.
+      </p>
+      {deleteAllIssuesPending ? (
+        <Button size="sm" variant="destructive" disabled>
+          <Loader2 className="h-3 w-3 animate-spin mr-1" />
+          Deleting issues...
+        </Button>
+      ) : confirming ? (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-destructive font-medium">
+            Delete all issues in &ldquo;{project.name}&rdquo;?
+          </span>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => {
+              setConfirming(false);
+              onDeleteAllIssues();
+            }}
+          >
+            Confirm
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setConfirming(false)}
+          >
+            Cancel
+          </Button>
+        </div>
+      ) : (
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={() => setConfirming(true)}
+        >
+          <Trash2 className="h-3 w-3 mr-1" />
+          Delete All Issues
+        </Button>
+      )}
+    </div>
+  );
+}
+
+export function ProjectProperties({
+  project,
+  onUpdate,
+  onFieldUpdate,
+  getFieldSaveState,
+  onArchive,
+  archivePending,
+  onDeleteAllIssues,
+  deleteAllIssuesPending,
+}: ProjectPropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [goalOpen, setGoalOpen] = useState(false);
@@ -1116,6 +1185,13 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
               onArchive={onArchive}
               archivePending={archivePending}
             />
+            {onDeleteAllIssues ? (
+              <DeleteAllIssuesDangerZone
+                project={project}
+                onDeleteAllIssues={onDeleteAllIssues}
+                deleteAllIssuesPending={deleteAllIssuesPending}
+              />
+            ) : null}
           </div>
         </>
       )}
