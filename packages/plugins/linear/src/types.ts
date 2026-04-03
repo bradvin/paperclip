@@ -14,6 +14,7 @@ export interface CompanyMappingConfig {
   teamId: string;
   apiTokenSecretRef: string;
   syncDirection?: SyncDirection;
+  forceMatchIdentifier?: boolean;
   importLinearIssues?: boolean;
   autoCreateLinearIssues?: boolean;
   syncComments?: boolean;

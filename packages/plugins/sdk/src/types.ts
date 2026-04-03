@@ -897,6 +897,7 @@ export interface PluginIssuesClient {
     projectId?: string;
     goalId?: string;
     parentId?: string;
+    identifier?: string;
     title: string;
     description?: string;
     status?: Issue["status"];
@@ -907,7 +908,7 @@ export interface PluginIssuesClient {
     issueId: string,
     patch: Partial<Pick<
       Issue,
-      "title" | "description" | "status" | "priority" | "assigneeAgentId" | "projectId"
+      "title" | "description" | "status" | "priority" | "assigneeAgentId" | "projectId" | "identifier"
     >>,
     companyId: string,
   ): Promise<Issue>;

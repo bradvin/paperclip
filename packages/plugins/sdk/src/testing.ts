@@ -419,6 +419,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async create(input) {
         requireCapability(manifest, capabilitySet, "issues.create");
+        const normalizedIdentifier = typeof input.identifier === "string" && input.identifier.trim().length > 0
+          ? input.identifier.trim().toUpperCase()
+          : null;
+        const derivedIssueNumber = normalizedIdentifier
+          ? Number(normalizedIdentifier.split("-").pop() ?? "")
+          : null;
         const now = new Date();
         const record: Issue = {
           id: randomUUID(),
@@ -443,8 +449,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           lastQaAgentId: null,
           createdByAgentId: null,
           createdByUserId: null,
-          issueNumber: null,
-          identifier: null,
+          issueNumber: Number.isInteger(derivedIssueNumber) && (derivedIssueNumber as number) > 0
+            ? derivedIssueNumber
+            : null,
+          identifier: normalizedIdentifier,
           requestDepth: 0,
           billingCode: null,
           assigneeAdapterOverrides: null,
@@ -465,9 +473,21 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "issues.update");
         const record = issues.get(issueId);
         if (!isInCompany(record, companyId)) throw new Error(`Issue not found: ${issueId}`);
+        const nextIdentifier = typeof patch.identifier === "string" && patch.identifier.trim().length > 0
+          ? patch.identifier.trim().toUpperCase()
+          : undefined;
+        const derivedIssueNumber = nextIdentifier
+          ? Number(nextIdentifier.split("-").pop() ?? "")
+          : undefined;
         const updated: Issue = {
           ...record,
           ...patch,
+          ...(nextIdentifier ? {
+            identifier: nextIdentifier,
+            issueNumber: Number.isInteger(derivedIssueNumber) && (derivedIssueNumber as number) > 0
+              ? derivedIssueNumber
+              : record.issueNumber,
+          } : {}),
           updatedAt: new Date(),
         };
         issues.set(issueId, updated);

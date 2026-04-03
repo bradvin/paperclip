@@ -604,6 +604,7 @@ export interface WorkerToHostMethods {
       projectId?: string;
       goalId?: string;
       parentId?: string;
+      identifier?: string;
       title: string;
       description?: string;
       status?: string;

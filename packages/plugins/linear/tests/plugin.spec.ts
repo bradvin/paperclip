@@ -639,6 +639,62 @@ describe("Linear plugin", () => {
     expect(issues[1]?.projectId).toBe(projects[0]?.id);
   });
 
+  it("forces imported Paperclip issue identifiers to match Linear when enabled", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+            forceMatchIdentifier: true,
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                createRemoteIssue({
+                  id: "linear_issue_force_id",
+                  identifier: "ACME-801",
+                  title: "Imported with source-of-truth identifier",
+                }),
+              ],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    const issues = await harness.ctx.issues.list({ companyId: "co_1" });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.identifier).toBe("ACME-801");
+    expect(issues[0]?.issueNumber).toBe(801);
+  });
+
   it("pushes linked Paperclip project assignments back to Linear", async () => {
     const harness = createTestHarness({
       manifest,
@@ -1413,6 +1469,97 @@ describe("Linear plugin", () => {
     expect(imported[0]?.title).toBe("Mapped state issue");
   });
 
+  it("previews the next pull without mutating Paperclip issues or projects", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+            statusMappings: [
+              { linearStateId: "state_started", paperclipStatus: "in_progress" },
+            ],
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+      projects: [],
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                createRemoteIssue({
+                  id: "linear_started_one",
+                  identifier: "ACME-611",
+                  title: "Started issue one",
+                  updatedAt: "2026-03-20T10:00:00.000Z",
+                  state: { id: "state_started", name: "In Progress", type: "started" },
+                  project: { id: "project_platform", name: "Platform" },
+                }),
+                createRemoteIssue({
+                  id: "linear_started_two",
+                  identifier: "ACME-612",
+                  title: "Started issue two",
+                  updatedAt: "2026-03-20T10:01:00.000Z",
+                  state: { id: "state_started", name: "In Progress", type: "started" },
+                  project: { id: "project_platform", name: "Platform" },
+                }),
+                createRemoteIssue({
+                  id: "linear_review",
+                  identifier: "ACME-613",
+                  title: "Review issue",
+                  updatedAt: "2026-03-20T10:02:00.000Z",
+                  state: { id: "state_review", name: "Review", type: "started" },
+                  project: { id: "project_design", name: "Design" },
+                }),
+              ],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    const result = await harness.performAction<{
+      issueCount: number;
+      projectCount: number;
+      skippedUnmappedIssueCount: number;
+      blockedImportIssueCount: number;
+      full: boolean;
+      lastCursor: string | null;
+    }>("dry-run-sync", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    expect(result).toMatchObject({
+      issueCount: 2,
+      projectCount: 1,
+      skippedUnmappedIssueCount: 1,
+      blockedImportIssueCount: 0,
+      full: true,
+      lastCursor: null,
+    });
+    expect(await harness.ctx.issues.list({ companyId: "co_1" })).toHaveLength(0);
+    expect(await harness.ctx.projects.list({ companyId: "co_1" })).toHaveLength(0);
+  });
+
   it("does not create duplicate Paperclip issues on repeated pull syncs when entity scope filters are unavailable", async () => {
     const harness = createTestHarness({
       manifest,
@@ -1485,11 +1632,83 @@ describe("Linear plugin", () => {
 
     const overview = await harness.getData<{
       linkedIssueCount: number;
-      companies: Array<{ companyId: string; linkedIssues: number }>;
+      linkedProjectCount: number;
+      companies: Array<{ companyId: string; linkedIssues: number; linkedProjects: number }>;
     }>("overview", {
       companyId: "co_1",
     });
     expect(overview.linkedIssueCount).toBe(2);
+    expect(overview.linkedProjectCount).toBe(0);
     expect(overview.companies.find((company) => company.companyId === "co_1")?.linkedIssues).toBe(2);
+    expect(overview.companies.find((company) => company.companyId === "co_1")?.linkedProjects).toBe(0);
+  });
+
+  it("counts only live linked issues in overview and reports linked projects separately", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    installHostLikeEntityStore(harness);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+      projects: [createProject({ id: "proj_1", companyId: "co_1", name: "Platform" })],
+    });
+
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.issueLink,
+      scopeKind: "issue",
+      scopeId: "missing_issue",
+      externalId: "linear_missing",
+      title: "ACME-999",
+      status: "linked",
+      data: {
+        companyId: "co_1",
+        teamId: "team_1",
+        paperclipIssueId: "missing_issue",
+        linearIssueId: "linear_missing",
+        linearIdentifier: "ACME-999",
+        linearUrl: "https://linear.app/acme/issue/ACME-999/test",
+      },
+    });
+    await harness.ctx.entities.upsert({
+      entityType: ENTITY_TYPES.projectLink,
+      scopeKind: "project",
+      scopeId: "proj_1",
+      externalId: "linear_project_1",
+      title: "Platform",
+      status: "linked",
+      data: {
+        companyId: "co_1",
+        paperclipProjectId: "proj_1",
+        linearProjectId: "linear_project_1",
+        linearProjectName: "Platform",
+      },
+    });
+
+    const overview = await harness.getData<{
+      linkedIssueCount: number;
+      linkedProjectCount: number;
+      companies: Array<{ companyId: string; linkedIssues: number; linkedProjects: number }>;
+    }>("overview", {
+      companyId: "co_1",
+    });
+
+    expect(overview.linkedIssueCount).toBe(0);
+    expect(overview.linkedProjectCount).toBe(1);
+    expect(overview.companies.find((company) => company.companyId === "co_1")).toMatchObject({
+      linkedIssues: 0,
+      linkedProjects: 1,
+    });
   });
 });

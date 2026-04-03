@@ -38,6 +38,7 @@ type LinearMappingFormState = {
   apiTokenSecretRef: string;
   apiKeyInput: string;
   syncDirection: LinearSyncDirection;
+  forceMatchIdentifier: boolean;
   importLinearIssues: boolean;
   autoCreateLinearIssues: boolean;
   syncComments: boolean;
@@ -51,6 +52,7 @@ type PersistedLinearMapping = {
   teamId: string;
   apiTokenSecretRef: string;
   syncDirection: LinearSyncDirection;
+  forceMatchIdentifier: boolean;
   importLinearIssues: boolean;
   autoCreateLinearIssues: boolean;
   syncComments: boolean;
@@ -75,6 +77,7 @@ type LinearCompanySummary = {
   teamId: string;
   syncDirection: string;
   linkedIssues: number;
+  linkedProjects: number;
   lastSuccessAt: string | null;
   lastRunAt: string | null;
   lastError: string | null;
@@ -83,6 +86,7 @@ type LinearCompanySummary = {
 
 type LinearOverviewData = {
   companies: LinearCompanySummary[];
+  linkedProjectCount?: number;
 };
 
 type LinearTeamSummary = {
@@ -109,6 +113,17 @@ type LinearWorkflowStateOptionsData = {
   companyId: string;
   teamId: string;
   states: LinearWorkflowStateOption[];
+};
+
+type LinearDryRunResult = {
+  companyId: string;
+  full: boolean;
+  issueCount: number;
+  projectCount: number;
+  skippedUnmappedIssueCount: number;
+  blockedImportIssueCount: number;
+  lastCursor: string | null;
+  generatedAt: string;
 };
 
 const PAPERCLIP_STATUS_LABELS: Record<IssueStatus, string> = {
@@ -152,6 +167,7 @@ function createEmptyMapping(defaultCompanyId: string | null): LinearMappingFormS
     apiTokenSecretRef: "",
     apiKeyInput: "",
     syncDirection: "bidirectional",
+    forceMatchIdentifier: false,
     importLinearIssues: true,
     autoCreateLinearIssues: true,
     syncComments: true,
@@ -184,6 +200,7 @@ function parseMappings(
         entry.syncDirection === "pull" || entry.syncDirection === "push" || entry.syncDirection === "bidirectional"
           ? entry.syncDirection
           : "bidirectional",
+      forceMatchIdentifier: entry.forceMatchIdentifier === true,
       importLinearIssues: entry.importLinearIssues !== false,
       autoCreateLinearIssues: entry.autoCreateLinearIssues !== false,
       syncComments: entry.syncComments !== false,
@@ -213,6 +230,7 @@ function toPersistedMappings(mappings: LinearMappingFormState[]): PersistedLinea
     teamId: mapping.teamId,
     apiTokenSecretRef: mapping.apiTokenSecretRef,
     syncDirection: mapping.syncDirection,
+    forceMatchIdentifier: mapping.forceMatchIdentifier,
     importLinearIssues: mapping.importLinearIssues,
     autoCreateLinearIssues: mapping.autoCreateLinearIssues,
     syncComments: mapping.syncComments,
@@ -366,6 +384,7 @@ export function LinearPluginSettings({
   const [mappings, setMappings] = useState<LinearMappingFormState[]>(initialMappings);
   const [lastAppliedSignature, setLastAppliedSignature] = useState(initialSignature);
   const [formMessage, setFormMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const [dryRunResults, setDryRunResults] = useState<Record<string, LinearDryRunResult>>({});
   const hydratedRef = useRef(false);
 
   const isDirty = useMemo(
@@ -386,6 +405,10 @@ export function LinearPluginSettings({
       setLastAppliedSignature(initialSignature);
     }
   }, [initialMappings, initialSignature, isDirty, lastAppliedSignature]);
+
+  useEffect(() => {
+    setDryRunResults({});
+  }, [mappings]);
 
   const mappedCompanyIds = useMemo(
     () => Array.from(new Set(mappings.map((mapping) => mapping.companyId).filter(Boolean))),
@@ -581,6 +604,7 @@ export function LinearPluginSettings({
           companyId: mapping.companyId,
           apiTokenSecretRef,
           syncDirection: mapping.syncDirection,
+          forceMatchIdentifier: mapping.forceMatchIdentifier,
           importLinearIssues: mapping.importLinearIssues,
           autoCreateLinearIssues: mapping.autoCreateLinearIssues,
           syncComments: mapping.syncComments,
@@ -670,6 +694,37 @@ export function LinearPluginSettings({
     onError: (error: Error) => {
       pushToast({
         title: "Linear sync failed",
+        body: error.message,
+        tone: "error",
+      });
+    },
+  });
+
+  const dryRunMutation = useMutation({
+    mutationFn: async ({ companyId, full }: { companyId: string; full: boolean }) => {
+      const response = await pluginsApi.bridgePerformAction(
+        pluginId,
+        "dry-run-sync",
+        { companyId, full },
+        companyId,
+      );
+      return response.data as LinearDryRunResult;
+    },
+    onSuccess: (result, variables) => {
+      setDryRunResults((current) => ({
+        ...current,
+        [variables.companyId]: result,
+      }));
+      const companyName = companyById.get(variables.companyId)?.name ?? "Company";
+      pushToast({
+        title: "Linear dry run complete",
+        body: `${companyName}: would pull ${result.issueCount} issue${result.issueCount === 1 ? "" : "s"} across ${result.projectCount} project${result.projectCount === 1 ? "" : "s"}.`,
+        tone: "success",
+      });
+    },
+    onError: (error: Error) => {
+      pushToast({
+        title: "Linear dry run failed",
         body: error.message,
         tone: "error",
       });
@@ -814,6 +869,7 @@ export function LinearPluginSettings({
             const workflowStateQuery = workflowStateQueries[index];
             const teamOptions = teamQuery?.data?.teams ?? [];
             const workflowStateOptions = workflowStateQuery?.data?.states ?? [];
+            const dryRunResult = mapping.companyId ? dryRunResults[mapping.companyId] ?? null : null;
             const paperclipIdentifier = company?.issuePrefix?.trim().toUpperCase() ?? "";
             const hasSavedApiKey = Boolean(mapping.apiTokenSecretRef);
             const hasFullMapping = Boolean(mapping.teamId.trim());
@@ -1161,7 +1217,26 @@ export function LinearPluginSettings({
                       )}
                     </div>
 
-                    <div className="mt-4 grid gap-3 rounded-lg border border-border/60 bg-background/50 p-3 md:grid-cols-3">
+                    <div className="mt-4 grid gap-3 rounded-lg border border-border/60 bg-background/50 p-3 md:grid-cols-2 xl:grid-cols-4">
+                      <label className="flex items-start gap-3 text-sm">
+                        <Checkbox
+                          checked={mapping.forceMatchIdentifier}
+                          onCheckedChange={(checked) =>
+                            updateMapping(index, (current) => ({
+                              ...current,
+                              forceMatchIdentifier: checked === true,
+                            }))
+                          }
+                          disabled={saveMutation.isPending}
+                        />
+                        <span>
+                          <span className="font-medium text-foreground">Force match identifier</span>
+                          <span className="block text-xs text-muted-foreground">
+                            On pull, override the Paperclip issue identifier to match Linear. This makes Linear the source of truth for issue IDs.
+                          </span>
+                        </span>
+                      </label>
+
                       <label className="flex items-start gap-3 text-sm">
                         <Checkbox
                           checked={mapping.importLinearIssues}
@@ -1233,6 +1308,29 @@ export function LinearPluginSettings({
                             type="button"
                             variant="outline"
                             size="sm"
+                            onClick={() => dryRunMutation.mutate({ companyId: mapping.companyId, full: false })}
+                            disabled={
+                              saveMutation.isPending ||
+                              dryRunMutation.isPending ||
+                              resyncMutation.isPending ||
+                              !mapping.companyId ||
+                              !pluginReady ||
+                              isDirty
+                            }
+                          >
+                            {dryRunMutation.isPending && dryRunMutation.variables?.companyId === mapping.companyId ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Previewing...
+                              </>
+                            ) : (
+                              "Dry run"
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
                             onClick={() => resyncMutation.mutate({ companyId: mapping.companyId, full: false })}
                             disabled={
                               saveMutation.isPending ||
@@ -1276,12 +1374,34 @@ export function LinearPluginSettings({
                         </div>
                       </div>
 
-                      <div className="mt-3 grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-4">
+                      <div className="mt-3 grid gap-2 text-xs text-muted-foreground md:grid-cols-2 xl:grid-cols-5">
                         <div>Linked issues: {summary?.linkedIssues ?? 0}</div>
+                        <div>Linked projects: {summary?.linkedProjects ?? 0}</div>
                         <div>Last success: {formatTimestamp(summary?.lastSuccessAt)}</div>
                         <div>Last run: {formatTimestamp(summary?.lastRunAt)}</div>
                         <div>Cursor: {summary?.lastCursor ?? "None"}</div>
                       </div>
+
+                      {dryRunResult ? (
+                        <div className="mt-3 rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs">
+                          <p className="font-medium text-foreground">
+                            Dry run preview: {dryRunResult.issueCount} issue{dryRunResult.issueCount === 1 ? "" : "s"} across {dryRunResult.projectCount} project{dryRunResult.projectCount === 1 ? "" : "s"}.
+                          </p>
+                          <p className="mt-1 text-muted-foreground">
+                            Based on the next incremental pull using cursor {dryRunResult.lastCursor ?? "None"} · checked {formatTimestamp(dryRunResult.generatedAt)}.
+                          </p>
+                          {dryRunResult.skippedUnmappedIssueCount > 0 ? (
+                            <p className="mt-1 text-muted-foreground">
+                              {dryRunResult.skippedUnmappedIssueCount} issue{dryRunResult.skippedUnmappedIssueCount === 1 ? "" : "s"} would be skipped because their Linear status is not mapped for pull.
+                            </p>
+                          ) : null}
+                          {dryRunResult.blockedImportIssueCount > 0 ? (
+                            <p className="mt-1 text-amber-700 dark:text-amber-400">
+                              {dryRunResult.blockedImportIssueCount} issue{dryRunResult.blockedImportIssueCount === 1 ? "" : "s"} are not linked yet and would not import while "Import Linear issues" is disabled.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
 
                       {!pluginReady ? (
                         <p className="mt-3 text-xs text-muted-foreground">
@@ -1289,7 +1409,7 @@ export function LinearPluginSettings({
                         </p>
                       ) : isDirty ? (
                         <p className="mt-3 text-xs text-muted-foreground">
-                          Save your settings before running a manual sync so the worker uses the latest mapping.
+                          Save your settings before running a dry run or manual sync so the worker uses the latest mapping.
                         </p>
                       ) : null}
 

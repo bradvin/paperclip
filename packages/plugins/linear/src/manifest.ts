@@ -65,6 +65,11 @@ const manifest: PaperclipPluginManifestV1 = {
               enum: ["pull", "push", "bidirectional"],
               default: "bidirectional",
             },
+            forceMatchIdentifier: {
+              type: "boolean",
+              title: "Force Match Identifier",
+              default: false,
+            },
             importLinearIssues: {
               type: "boolean",
               title: "Import Linear Issues",

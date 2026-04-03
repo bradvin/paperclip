@@ -47,6 +47,7 @@ type StoredCompanyMapping = {
   teamId: string;
   apiTokenSecretRef: string;
   syncDirection?: CompanyMappingConfig["syncDirection"];
+  forceMatchIdentifier: boolean;
   importLinearIssues: boolean;
   autoCreateLinearIssues: boolean;
   syncComments: boolean;
@@ -113,6 +114,7 @@ function parseStoredMappings(config: Record<string, unknown> | null | undefined)
         teamId: String(entry.teamId ?? "").trim(),
         apiTokenSecretRef: String(entry.apiTokenSecretRef ?? "").trim(),
         syncDirection: (entry.syncDirection as CompanyMappingConfig["syncDirection"]) || "bidirectional",
+        forceMatchIdentifier: entry.forceMatchIdentifier === true,
         importLinearIssues: entry.importLinearIssues !== false,
         autoCreateLinearIssues: entry.autoCreateLinearIssues !== false,
         syncComments: entry.syncComments !== false,
@@ -420,6 +422,7 @@ function fingerprintIssue(issue: Issue): string {
   const blocks = (issue.blocks ?? []).map((entry) => `${entry.id}:${entry.relationType}`).sort();
   const blockedBy = (issue.blockedBy ?? []).map((entry) => `${entry.id}:${entry.relationType}`).sort();
   const payload = JSON.stringify({
+    identifier: issue.identifier,
     title: issue.title,
     description: issue.description,
     status: issue.status,
@@ -882,6 +885,7 @@ async function syncRemoteIssueToPaperclip(
     issue = await ctx.issues.create({
       companyId: mapping.companyId,
       projectId: localProjectId ?? undefined,
+      ...(mapping.forceMatchIdentifier ? { identifier: remoteIssue.identifier } : {}),
       title: remoteIssue.title,
       description: remoteIssue.description ?? undefined,
       status: desiredStatus,
@@ -891,6 +895,7 @@ async function syncRemoteIssueToPaperclip(
 
   await markSuppressWindow(ctx, issue.id, "issue-suppress-until", 5000);
   const updatedFields = await ctx.issues.update(issue.id, {
+    ...(mapping.forceMatchIdentifier ? { identifier: remoteIssue.identifier } : {}),
     projectId: localProjectId,
     title: remoteIssue.title,
     description: remoteIssue.description ?? null,
@@ -1129,6 +1134,78 @@ async function syncCompanyFromLinear(
   };
 }
 
+async function previewCompanySyncFromLinear(
+  ctx: PluginContext,
+  mapping: CompanyMappingConfig,
+  options?: { full?: boolean },
+): Promise<{
+  companyId: string;
+  full: boolean;
+  issueCount: number;
+  projectCount: number;
+  skippedUnmappedIssueCount: number;
+  blockedImportIssueCount: number;
+  lastCursor: string | null;
+  generatedAt: string;
+}> {
+  const checkpoint = await getCheckpoint(ctx, mapping);
+  const cursor = options?.full ? null : checkpoint.lastCursor ?? null;
+
+  if (!isPullEnabled(mapping)) {
+    return {
+      companyId: mapping.companyId,
+      full: options?.full === true,
+      issueCount: 0,
+      projectCount: 0,
+      skippedUnmappedIssueCount: 0,
+      blockedImportIssueCount: 0,
+      lastCursor: cursor,
+      generatedAt: nowIso(),
+    };
+  }
+
+  const remoteIssues = await listLinearIssuesUpdatedSince(ctx, mapping, cursor);
+  const issueLinks = await listIssueLinks(ctx);
+  const linkedLinearIssueIds = new Set(
+    issueLinks
+      .filter((entry) => entry.data.companyId === mapping.companyId)
+      .map((entry) => entry.data.linearIssueId),
+  );
+
+  const projectIds = new Set<string>();
+  let issueCount = 0;
+  let skippedUnmappedIssueCount = 0;
+  let blockedImportIssueCount = 0;
+
+  for (const remoteIssue of remoteIssues) {
+    const mappedStatus = mapLinearStateToPaperclipStatus(mapping, remoteIssue);
+    if (!mappedStatus) {
+      skippedUnmappedIssueCount += 1;
+      continue;
+    }
+    if (!mapping.importLinearIssues && !linkedLinearIssueIds.has(remoteIssue.id)) {
+      blockedImportIssueCount += 1;
+      continue;
+    }
+
+    issueCount += 1;
+    if (remoteIssue.project?.id) {
+      projectIds.add(remoteIssue.project.id);
+    }
+  }
+
+  return {
+    companyId: mapping.companyId,
+    full: options?.full === true,
+    issueCount,
+    projectCount: projectIds.size,
+    skippedUnmappedIssueCount,
+    blockedImportIssueCount,
+    lastCursor: cursor,
+    generatedAt: nowIso(),
+  };
+}
+
 async function handlePaperclipIssueEvent(
   ctx: PluginContext,
   companyId: string,
@@ -1190,18 +1267,31 @@ async function verifyWebhookSignature(
 async function getOverviewData(ctx: PluginContext, companyId?: string | null) {
   const companies = await ctx.companies.list({ limit: 500, offset: 0 });
   const config = await getConfig(ctx);
-  const allLinks = await listIssueLinks(ctx);
+  const allIssueLinks = await listIssueLinks(ctx);
+  const allProjectLinks = await listProjectLinks(ctx);
 
   const summaries = await Promise.all(config.companyMappings?.map(async (mapping) => {
     const company = companies.find((entry) => entry.id === mapping.companyId) ?? null;
-    const checkpoint = await getCheckpoint(ctx, mapping);
-    const linkedIssues = allLinks.filter((entry) => entry.data.companyId === mapping.companyId).length;
+    const [checkpoint, issues, projects] = await Promise.all([
+      getCheckpoint(ctx, mapping),
+      ctx.issues.list({ companyId: mapping.companyId, limit: 5000, offset: 0 }),
+      ctx.projects.list({ companyId: mapping.companyId, limit: 5000, offset: 0 }),
+    ]);
+    const liveIssueIds = new Set(issues.map((issue) => issue.id));
+    const liveProjectIds = new Set(projects.map((project) => project.id));
+    const linkedIssues = allIssueLinks.filter(
+      (entry) => entry.data.companyId === mapping.companyId && Boolean(entry.scopeId && liveIssueIds.has(entry.scopeId)),
+    ).length;
+    const linkedProjects = allProjectLinks.filter(
+      (entry) => entry.data.companyId === mapping.companyId && Boolean(entry.scopeId && liveProjectIds.has(entry.scopeId)),
+    ).length;
     return {
       companyId: mapping.companyId,
       companyName: company?.name ?? mapping.companyId,
       teamId: mapping.teamId,
       syncDirection: mapping.syncDirection ?? "bidirectional",
       linkedIssues,
+      linkedProjects,
       lastSuccessAt: checkpoint.lastSuccessAt ?? null,
       lastRunAt: checkpoint.lastRunAt ?? null,
       lastError: checkpoint.lastError ?? null,
@@ -1214,7 +1304,8 @@ async function getOverviewData(ctx: PluginContext, companyId?: string | null) {
     pageRoute: PAGE_ROUTE,
     activeCompanyId: companyId ?? null,
     companyCount: summaries.length,
-    linkedIssueCount: allLinks.length,
+    linkedIssueCount: summaries.reduce((total, summary) => total + summary.linkedIssues, 0),
+    linkedProjectCount: summaries.reduce((total, summary) => total + summary.linkedProjects, 0),
     companies: summaries,
   };
 }
@@ -1230,6 +1321,7 @@ async function getIssueLinkData(ctx: PluginContext, companyId: string, issueId: 
     companyId,
     mappingConfigured: !!mapping,
     syncDirection: mapping?.syncDirection ?? "bidirectional",
+    forceMatchIdentifier: mapping?.forceMatchIdentifier === true,
     autoCreateLinearIssues: mapping?.autoCreateLinearIssues !== false,
     syncComments: mapping?.syncComments !== false,
     linked: !!link,
@@ -1350,6 +1442,16 @@ const plugin = definePlugin({
       const mapping = await getMapping(ctx, companyId);
       if (!mapping) throw new Error("No Linear mapping configured for this company");
       return await syncCompanyFromLinear(ctx, mapping, {
+        full: params.full === true,
+      });
+    });
+
+    ctx.actions.register("dry-run-sync", async (params) => {
+      const companyId = String(params.companyId ?? "");
+      if (!companyId) throw new Error("companyId is required");
+      const mapping = await getMapping(ctx, companyId);
+      if (!mapping) throw new Error("No Linear mapping configured for this company");
+      return await previewCompanySyncFromLinear(ctx, mapping, {
         full: params.full === true,
       });
     });

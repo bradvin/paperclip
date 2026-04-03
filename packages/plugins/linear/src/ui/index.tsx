@@ -16,6 +16,7 @@ type CompanySummary = {
   teamId: string;
   syncDirection: string;
   linkedIssues: number;
+  linkedProjects: number;
   lastSuccessAt: string | null;
   lastRunAt: string | null;
   lastError: string | null;
@@ -28,6 +29,7 @@ type OverviewData = {
   activeCompanyId: string | null;
   companyCount: number;
   linkedIssueCount: number;
+  linkedProjectCount: number;
   companies: CompanySummary[];
 };
 
@@ -37,6 +39,7 @@ type PluginConfigData = {
     teamId: string;
     apiTokenSecretRef: string;
     syncDirection?: string;
+    forceMatchIdentifier?: boolean;
     importLinearIssues?: boolean;
     autoCreateLinearIssues?: boolean;
     syncComments?: boolean;
@@ -46,8 +49,6 @@ type PluginConfigData = {
       paperclipStatus: string;
       syncMode?: string;
     }>;
-    graphqlUrl?: string;
-    webhookSecretRef?: string;
   }>;
 };
 
@@ -65,6 +66,7 @@ type IssueLinkData = {
   companyId: string;
   mappingConfigured: boolean;
   syncDirection: string;
+  forceMatchIdentifier: boolean;
   autoCreateLinearIssues: boolean;
   syncComments: boolean;
   linked: boolean;
@@ -181,7 +183,7 @@ export function LinearPage(_props: PluginPageProps) {
       <div style={cardStyle}>
         <strong>Linear Sync</strong>
         <div style={mutedStyle}>
-          {data?.companyCount ?? 0} mapped companies, {data?.linkedIssueCount ?? 0} linked issues
+          {data?.companyCount ?? 0} mapped companies, {data?.linkedIssueCount ?? 0} linked issues, {data?.linkedProjectCount ?? 0} linked projects
         </div>
       </div>
 
@@ -200,6 +202,7 @@ export function LinearPage(_props: PluginPageProps) {
           <div style={stackStyle}>
             <div style={mutedStyle}>Direction: {company.syncDirection}</div>
             <div style={mutedStyle}>Linked issues: {company.linkedIssues}</div>
+            <div style={mutedStyle}>Linked projects: {company.linkedProjects}</div>
             <div style={mutedStyle}>Last success: {formatTimestamp(company.lastSuccessAt)}</div>
             <div style={mutedStyle}>Last run: {formatTimestamp(company.lastRunAt)}</div>
             <div style={mutedStyle}>Cursor: {company.lastCursor ?? "None"}</div>
@@ -232,14 +235,13 @@ export function LinearSettingsPage(_props: PluginSettingsPageProps) {
           <div style={{ fontWeight: 600 }}>{mapping.companyId}</div>
           <div style={mutedStyle}>Linear team: {mapping.teamId}</div>
           <div style={mutedStyle}>Direction: {mapping.syncDirection ?? "bidirectional"}</div>
+          <div style={mutedStyle}>Force match identifier: {mapping.forceMatchIdentifier ? "Yes" : "No"}</div>
           <div style={mutedStyle}>Import Linear issues: {mapping.importLinearIssues === false ? "No" : "Yes"}</div>
           <div style={mutedStyle}>Auto-create Linear issues: {mapping.autoCreateLinearIssues === false ? "No" : "Yes"}</div>
           <div style={mutedStyle}>Sync comments: {mapping.syncComments === false ? "No" : "Yes"}</div>
           <div style={mutedStyle}>Mapped statuses: {mapping.statusMappings?.length ?? 0}</div>
           <div style={mutedStyle}>Blocked state: {mapping.blockedStateName ?? "Not set"}</div>
-          <div style={mutedStyle}>GraphQL URL: {mapping.graphqlUrl ?? "Default Linear endpoint"}</div>
           <div style={mutedStyle}>API token secret ref: {mapping.apiTokenSecretRef}</div>
-          <div style={mutedStyle}>Webhook secret ref: {mapping.webhookSecretRef ?? "Not set"}</div>
         </div>
       ))}
     </div>
@@ -261,6 +263,7 @@ export function LinearDashboardWidget(_props: PluginWidgetProps) {
     <div style={stackStyle}>
       <strong>Linear Sync</strong>
       <div style={mutedStyle}>Linked issues: {data?.linkedIssueCount ?? 0}</div>
+      <div style={mutedStyle}>Linked projects: {data?.linkedProjectCount ?? 0}</div>
       {activeCompany ? (
         <>
           <div style={mutedStyle}>{activeCompany.companyName}</div>
@@ -330,6 +333,7 @@ export function LinearIssueDetailTab({ context }: PluginDetailTabProps) {
         ) : (
           <>
             <div style={mutedStyle}>Direction: {data.syncDirection}</div>
+            <div style={mutedStyle}>Force match identifier: {data.forceMatchIdentifier ? "On" : "Off"}</div>
             <div style={mutedStyle}>Comments sync: {data.syncComments ? "On" : "Off"}</div>
             <div style={mutedStyle}>Auto-create missing Linear issue: {data.autoCreateLinearIssues ? "On" : "Off"}</div>
           </>

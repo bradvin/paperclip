@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -53,6 +53,57 @@ const ALL_ISSUE_STATUSES = [
   "cancelled",
 ];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function resolveExplicitIssueIdentity(
+  companyIssuePrefix: string,
+  input: { identifier?: string | null; issueNumber?: number | null },
+): { identifier: string; issueNumber: number } | null {
+  const explicitIdentifier = typeof input.identifier === "string" ? input.identifier.trim().toUpperCase() : "";
+  const explicitIssueNumber = typeof input.issueNumber === "number" ? input.issueNumber : null;
+  const prefix = companyIssuePrefix.trim().toUpperCase();
+
+  if (!explicitIdentifier && explicitIssueNumber == null) {
+    return null;
+  }
+
+  if (explicitIdentifier) {
+    const match = explicitIdentifier.match(new RegExp(`^${escapeRegExp(prefix)}-(\\d+)$`, "i"));
+    if (!match?.[1]) {
+      throw unprocessable(`Issue identifier must match the company prefix ${prefix}`);
+    }
+    const issueNumber = Number(match[1]);
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      throw unprocessable("Issue identifier must end in a positive integer");
+    }
+    return {
+      identifier: `${prefix}-${issueNumber}`,
+      issueNumber,
+    };
+  }
+
+  if (!Number.isInteger(explicitIssueNumber) || explicitIssueNumber == null || explicitIssueNumber <= 0) {
+    throw unprocessable("Issue number must be a positive integer");
+  }
+
+  return {
+    identifier: `${prefix}-${explicitIssueNumber}`,
+    issueNumber: explicitIssueNumber,
+  };
+}
+
+export function nextCompanyIssueCounterForIdentity(
+  currentIssueCounter: number,
+  identity: { issueNumber: number } | null,
+): number {
+  if (!identity) {
+    return currentIssueCounter;
+  }
+  return Math.max(currentIssueCounter, identity.issueNumber);
+}
 
 function applyStatusSideEffects(
   status: string | undefined,
@@ -1125,6 +1176,14 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        const currentCompany = await tx
+          .select({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix })
+          .from(companies)
+          .where(eq(companies.id, companyId))
+          .then((rows) => rows[0]);
+        if (!currentCompany) {
+          throw notFound("Company not found");
+        }
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
         if (executionWorkspaceSettings == null && issueData.projectId) {
@@ -1161,14 +1220,40 @@ export function issueService(db: Db) {
               .then((rows) => rows[0]?.id ?? null);
           }
         }
-        const [company] = await tx
-          .update(companies)
-          .set({ issueCounter: sql`${companies.issueCounter} + 1` })
-          .where(eq(companies.id, companyId))
-          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+        const explicitIdentity = resolveExplicitIssueIdentity(currentCompany.issuePrefix, {
+          identifier: issueData.identifier,
+          issueNumber: issueData.issueNumber,
+        });
 
-        const issueNumber = company.issueCounter;
-        const identifier = `${company.issuePrefix}-${issueNumber}`;
+        let issueNumber: number;
+        let identifier: string;
+        if (explicitIdentity) {
+          const duplicate = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(eq(issues.identifier, explicitIdentity.identifier))
+            .then((rows) => rows[0] ?? null);
+          if (duplicate) {
+            throw conflict(`Issue identifier already exists: ${explicitIdentity.identifier}`);
+          }
+          const nextCounter = nextCompanyIssueCounterForIdentity(currentCompany.issueCounter, explicitIdentity);
+          if (nextCounter !== currentCompany.issueCounter) {
+            await tx
+              .update(companies)
+              .set({ issueCounter: nextCounter })
+              .where(eq(companies.id, companyId));
+          }
+          issueNumber = explicitIdentity.issueNumber;
+          identifier = explicitIdentity.identifier;
+        } else {
+          const [company] = await tx
+            .update(companies)
+            .set({ issueCounter: sql`${companies.issueCounter} + 1` })
+            .where(eq(companies.id, companyId))
+            .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+          issueNumber = company.issueCounter;
+          identifier = `${company.issuePrefix}-${issueNumber}`;
+        }
 
         const values = {
           ...issueData,
@@ -1335,6 +1420,37 @@ export function issueService(db: Db) {
 
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
+        const currentCompany = await tx
+          .select({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix })
+          .from(companies)
+          .where(eq(companies.id, existing.companyId))
+          .then((rows) => rows[0]);
+        if (!currentCompany) {
+          throw notFound("Company not found");
+        }
+        const explicitIdentity = resolveExplicitIssueIdentity(currentCompany.issuePrefix, {
+          identifier: issueData.identifier,
+          issueNumber: issueData.issueNumber,
+        });
+        if (explicitIdentity) {
+          const duplicate = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.identifier, explicitIdentity.identifier), ne(issues.id, id)))
+            .then((rows) => rows[0] ?? null);
+          if (duplicate) {
+            throw conflict(`Issue identifier already exists: ${explicitIdentity.identifier}`);
+          }
+          const nextCounter = nextCompanyIssueCounterForIdentity(currentCompany.issueCounter, explicitIdentity);
+          if (nextCounter !== currentCompany.issueCounter) {
+            await tx
+              .update(companies)
+              .set({ issueCounter: nextCounter })
+              .where(eq(companies.id, existing.companyId));
+          }
+          patch.identifier = explicitIdentity.identifier;
+          patch.issueNumber = explicitIdentity.issueNumber;
+        }
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,
           currentGoalId: existing.goalId,

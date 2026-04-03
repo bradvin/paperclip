@@ -609,6 +609,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             projectId: input.projectId,
             goalId: input.goalId,
             parentId: input.parentId,
+            identifier: input.identifier,
             title: input.title,
             description: input.description,
             status: input.status,
