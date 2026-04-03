@@ -731,6 +731,39 @@ export function LinearPluginSettings({
     },
   });
 
+  const resetCursorMutation = useMutation({
+    mutationFn: async ({ companyId }: { companyId: string }) => {
+      const response = await pluginsApi.bridgePerformAction(
+        pluginId,
+        "reset-sync-cursor",
+        { companyId },
+        companyId,
+      );
+      return response.data as { companyId: string; lastCursor: string | null };
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-overview"] });
+      const companyName = companyById.get(variables.companyId)?.name ?? "Company";
+      setDryRunResults((current) => {
+        const next = { ...current };
+        delete next[variables.companyId];
+        return next;
+      });
+      pushToast({
+        title: "Linear cursor reset",
+        body: `${companyName}: the next incremental pull will start from the beginning.`,
+        tone: "success",
+      });
+    },
+    onError: (error: Error) => {
+      pushToast({
+        title: "Failed to reset Linear cursor",
+        body: error.message,
+        tone: "error",
+      });
+    },
+  });
+
   const toggleSyncJobMutation = useMutation({
     mutationFn: async (job: Pick<PluginJobRecord, "id" | "status">) =>
       job.status === "active"
@@ -1369,6 +1402,30 @@ export function LinearPluginSettings({
                               </>
                             ) : (
                               "Full resync"
+                            )}
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => resetCursorMutation.mutate({ companyId: mapping.companyId })}
+                            disabled={
+                              saveMutation.isPending ||
+                              resyncMutation.isPending ||
+                              dryRunMutation.isPending ||
+                              resetCursorMutation.isPending ||
+                              !mapping.companyId ||
+                              !pluginReady ||
+                              isDirty
+                            }
+                          >
+                            {resetCursorMutation.isPending && resetCursorMutation.variables?.companyId === mapping.companyId ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                Resetting...
+                              </>
+                            ) : (
+                              "Reset cursor"
                             )}
                           </Button>
                         </div>

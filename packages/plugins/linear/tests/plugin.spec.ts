@@ -1560,6 +1560,93 @@ describe("Linear plugin", () => {
     expect(await harness.ctx.projects.list({ companyId: "co_1" })).toHaveLength(0);
   });
 
+  it("resets the saved sync cursor without mutating synced issues", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+            statusMappings: [
+              { linearStateId: "state_started", paperclipStatus: "in_progress" },
+            ],
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+      projects: [],
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                createRemoteIssue({
+                  id: "linear_cursor_old",
+                  identifier: "ACME-701",
+                  title: "Older issue",
+                  updatedAt: "2026-03-20T10:00:00.000Z",
+                }),
+                createRemoteIssue({
+                  id: "linear_cursor_new",
+                  identifier: "ACME-702",
+                  title: "Newer issue",
+                  updatedAt: "2026-03-20T10:05:00.000Z",
+                }),
+              ],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    await harness.performAction("resync-company", {
+      companyId: "co_1",
+      full: false,
+    });
+
+    const beforeReset = await harness.getData<{
+      companies: Array<{ companyId: string; lastCursor: string | null }>;
+    }>("overview", {
+      companyId: "co_1",
+    });
+
+    expect(beforeReset.companies.find((company) => company.companyId === "co_1")?.lastCursor).toBe("2026-03-20T10:05:00.000Z");
+
+    const result = await harness.performAction<{ companyId: string; lastCursor: string | null }>("reset-sync-cursor", {
+      companyId: "co_1",
+    });
+
+    expect(result).toEqual({
+      companyId: "co_1",
+      lastCursor: null,
+    });
+
+    const afterReset = await harness.getData<{
+      companies: Array<{ companyId: string; lastCursor: string | null }>;
+    }>("overview", {
+      companyId: "co_1",
+    });
+
+    expect(afterReset.companies.find((company) => company.companyId === "co_1")?.lastCursor).toBeNull();
+    expect(await harness.ctx.issues.list({ companyId: "co_1" })).toHaveLength(2);
+  });
+
   it("does not create duplicate Paperclip issues on repeated pull syncs when entity scope filters are unavailable", async () => {
     const harness = createTestHarness({
       manifest,

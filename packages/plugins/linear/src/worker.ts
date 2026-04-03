@@ -1456,6 +1456,22 @@ const plugin = definePlugin({
       });
     });
 
+    ctx.actions.register("reset-sync-cursor", async (params) => {
+      const companyId = String(params.companyId ?? "");
+      if (!companyId) throw new Error("companyId is required");
+      const mapping = await getMapping(ctx, companyId);
+      if (!mapping) throw new Error("No Linear mapping configured for this company");
+      const checkpoint = await saveCheckpoint(ctx, mapping, {
+        lastCursor: undefined,
+        lastRunAt: nowIso(),
+        lastError: null,
+      });
+      return {
+        companyId,
+        lastCursor: checkpoint.lastCursor ?? null,
+      };
+    });
+
     ctx.actions.register("create-linear-issue", async (params) => {
       const companyId = String(params.companyId ?? "");
       const issueId = String(params.issueId ?? "");
