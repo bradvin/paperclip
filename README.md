@@ -2,21 +2,23 @@
 
 This fork of [paperclipai/paperclip](https://github.com/paperclipai/paperclip) is set up as a control plane for engineering teams.
 
-It keeps the original company, agent, project, issue, and board model, but the workflow and defaults in this fork are aimed at software delivery rather than the upstream "run your business" framing. The important additions are a Linear-oriented issue lifecycle, dependency-aware routing, first-party Linear sync, company runtime controls, and better operational visibility for agent work.
+It keeps the original company, agent, project, issue, and board model, but the workflow and defaults in this fork are aimed at software delivery rather than the upstream "run your business" framing. The important additions are a Linear-oriented issue lifecycle, dependency-aware routing, first-party Linear sync, company runtime controls, project cleanup actions, and better operational visibility for agent work.
 
 ## Fork Differences From Upstream
 
-This fork adds or changes the following behavior compared to the upstream repository:
+This fork adds or changes the following behavior compared to the upstream repository. The list below is meant to capture the operator-facing behavior introduced by fork-only commits; test-only changes, internal refactors, and doc-only commits are intentionally left out.
 
 - Engineering workflow states: `testing`, `in_review`, `rework`, `merging`, and `blocked` are part of the normal runtime model.
 - Deterministic workflow routing: normal queue handoffs are handled by the control plane instead of relying on a CEO heartbeat to notice unassigned work.
 - Dependency-aware execution: issues support first-class `blocks` and `blockedBy` relations, checkout can redirect to actionable blockers, and the UI shows dependency state.
 - Persistent workflow handoff state: when checked-out work is released, Paperclip restores the prior queued state instead of flattening everything back to `todo`.
-- Linear sync plugin: first-party plugin for syncing Paperclip issues, comments, statuses, and blocking relationships with Linear.
-- In-app plugin management: the bundled Linear plugin can be enabled from the UI and configured without hand-editing plugin config.
+- Linear sync plugin: first-party plugin for syncing Paperclip issues, comments, statuses, blocking relationships, and linked projects with Linear.
+- Guided Linear setup and sync controls: the bundled Linear plugin can be enabled from the UI, mapped to a matching Linear team, configured with per-status sync rules, previewed with a dry run, pulled manually, fully resynced, and reset back to a clean cursor without editing config files by hand.
+- Linear sync visibility: plugin settings and dashboard surfaces show recent pull activity, success/failure history, and the last sync cursor so operators can see what the importer is doing.
 - Company-level runtime controls: board users can stop or start an entire company and resume only the agents paused by that action.
 - Cost checkpoints and reporting: operators can mark checkpoints and compare spend between checkpoints on the Costs page.
 - Engineering-team setup helpers: company settings can create a deterministic dummy issue suite for workflow testing, and agent configuration includes an explicit role selector.
+- Project and issue cleanup actions: issue detail supports direct issue deletion, and project detail supports deleting all issues in a project or deleting the project itself.
 - Optional CEO todo auto-assignment: a company setting can re-enable CEO-based todo assignment, but it is off by default because deterministic routing now covers normal queue movement.
 - Adapter/runtime fixes: this fork also includes reliability fixes for `pi-local`, skill injection, tool-result parsing, and an `openclaw-gateway` challenge rejection crash.
 
@@ -168,6 +170,7 @@ What it syncs:
 - status
 - comments
 - blocking dependencies
+- linked projects
 
 What it adds to the UI:
 
@@ -175,6 +178,8 @@ What it adds to the UI:
 - a dashboard widget
 - an issue detail tab
 - a company-context page
+- recent sync activity with success/failure history
+- manual dry-run, pull-recent, full-resync, and cursor-reset controls
 
 How to enable it:
 
@@ -189,6 +194,8 @@ Each mapping includes:
 - Linear team ID
 - Linear API key
 - sync direction: `pull`, `push`, or `bidirectional`
+- optional "force match identifier" behavior so Paperclip issue identifiers can follow Linear identifiers on pull
+- workflow status mappings for each Linear team status, including per-status sync mode (`disabled`, `pull`, `push`, or `bidirectional`)
 - optional comment sync toggle
 - optional auto-import / auto-create toggles
 - optional blocked state name override
@@ -199,6 +206,9 @@ Important operational details:
 
 - the API key and webhook secret are stored as company secrets; plugin config stores secret references, not raw secret values
 - the default poll job pulls Linear updates on a schedule
+- manual sync tools let you preview the next incremental pull, pull recent changes immediately, run a full resync, or reset the stored cursor for a company mapping
+- recent sync activity records successful pulls and failures, including the related Linear issue or project when available
+- Linear project data can link synced Linear issues back to Paperclip projects during pull sync
 - webhook ingest is optional, but useful if you want faster refresh than polling alone
 - if your Linear workflow has a dedicated blocked state, set `blockedStateName` so blocked work maps cleanly
 
