@@ -32,6 +32,7 @@ import {
 import type {
   CompanyMappingConfig,
   LinearCommentLinkData,
+  LinearSyncActivityRecord,
   LinearIssue,
   LinearIssueLinkData,
   LinearPluginConfig,
@@ -59,6 +60,7 @@ type StoredCompanyMapping = {
 
 let currentContext: PluginContext | null = null;
 const workflowStateCache = new Map<string, LinearWorkflowState[]>();
+const RECENT_SYNC_ACTIVITY_LIMIT = 50;
 const ISSUE_STATUS_TRANSITIONS: Record<Issue["status"], Issue["status"][]> = {
   backlog: ["todo", "cancelled"],
   todo: ["in_progress", "blocked", "cancelled"],
@@ -79,6 +81,25 @@ function summarizeError(error: unknown): string {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function buildSyncFailureId(parts: Array<string | null | undefined>) {
+  return createHash("sha1")
+    .update(parts.filter(Boolean).join("::"))
+    .digest("hex");
+}
+
+function summarizeSyncFailures(failedIssues: number, syncedIssues: number) {
+  if (failedIssues <= 0) return null;
+  return failedIssues === 1
+    ? `1 Linear issue failed to sync. ${syncedIssues} issue${syncedIssues === 1 ? "" : "s"} synced successfully.`
+    : `${failedIssues} Linear issues failed to sync. ${syncedIssues} issue${syncedIssues === 1 ? "" : "s"} synced successfully.`;
+}
+
+function extractDuplicateIdentifier(error: unknown): string | null {
+  const message = summarizeError(error);
+  const match = /^Issue identifier already exists: (.+)$/.exec(message);
+  return match?.[1]?.trim() || null;
 }
 
 function isPushEnabled(mapping: CompanyMappingConfig): boolean {
@@ -386,6 +407,40 @@ async function saveCheckpoint(
     scopeId: mapping.companyId,
     namespace: `${STATE_NAMESPACE}:${mapping.teamId}`,
     stateKey: "checkpoint",
+  }, next);
+  return next;
+}
+
+async function getRecentSyncActivity(
+  ctx: PluginContext,
+  mapping: CompanyMappingConfig,
+): Promise<LinearSyncActivityRecord[]> {
+  const value = await ctx.state.get({
+    scopeKind: "company",
+    scopeId: mapping.companyId,
+    namespace: `${STATE_NAMESPACE}:${mapping.teamId}`,
+    stateKey: "recent-sync-activity",
+  });
+  return Array.isArray(value) ? value as LinearSyncActivityRecord[] : [];
+}
+
+async function appendSyncActivity(
+  ctx: PluginContext,
+  mapping: CompanyMappingConfig,
+  activity: LinearSyncActivityRecord[],
+): Promise<LinearSyncActivityRecord[]> {
+  if (activity.length === 0) {
+    return await getRecentSyncActivity(ctx, mapping);
+  }
+  const current = await getRecentSyncActivity(ctx, mapping);
+  const next = [...activity, ...current]
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
+    .slice(0, RECENT_SYNC_ACTIVITY_LIMIT);
+  await ctx.state.set({
+    scopeKind: "company",
+    scopeId: mapping.companyId,
+    namespace: `${STATE_NAMESPACE}:${mapping.teamId}`,
+    stateKey: "recent-sync-activity",
   }, next);
   return next;
 }
@@ -1103,35 +1158,135 @@ async function syncCompanyFromLinear(
   ctx: PluginContext,
   mapping: CompanyMappingConfig,
   options?: { full?: boolean },
-): Promise<{ syncedIssues: number; lastCursor: string | null }> {
-  if (!isPullEnabled(mapping)) return { syncedIssues: 0, lastCursor: null };
+): Promise<{ syncedIssues: number; failedIssues: number; lastCursor: string | null; lastError: string | null }> {
+  if (!isPullEnabled(mapping)) return { syncedIssues: 0, failedIssues: 0, lastCursor: null, lastError: null };
   const checkpoint = await getCheckpoint(ctx, mapping);
   const cursor = options?.full ? null : checkpoint.lastCursor ?? null;
-  const remoteIssues = await listLinearIssuesUpdatedSince(ctx, mapping, cursor);
-  let lastCursor = cursor;
-  let syncedIssues = 0;
+  const runType = options?.full ? "full" : "incremental";
 
-  for (const remoteIssue of remoteIssues) {
-    const synced = await syncRemoteIssueToPaperclip(ctx, mapping, remoteIssue);
-    if (synced) {
-      syncedIssues += 1;
+  try {
+    const remoteIssues = await listLinearIssuesUpdatedSince(ctx, mapping, cursor);
+    let lastCursor = cursor;
+    let retryCursor: string | null = null;
+    let syncedIssues = 0;
+    let failedIssues = 0;
+    const activity: LinearSyncActivityRecord[] = [];
+
+    for (const remoteIssue of remoteIssues) {
+      try {
+        const synced = await syncRemoteIssueToPaperclip(ctx, mapping, remoteIssue);
+        if (synced) {
+          syncedIssues += 1;
+          const occurredAt = nowIso();
+          activity.push({
+            id: buildSyncFailureId([
+              occurredAt,
+              mapping.companyId,
+              mapping.teamId,
+              remoteIssue.id,
+              remoteIssue.identifier,
+              "success",
+            ]),
+            occurredAt,
+            companyId: mapping.companyId,
+            teamId: mapping.teamId,
+            direction: "pull",
+            result: "success",
+            runType,
+            message: `Synced into Paperclip as ${synced.identifier ?? synced.id}.`,
+            linearIssueId: remoteIssue.id,
+            linearIdentifier: remoteIssue.identifier,
+            linearTitle: remoteIssue.title,
+            linearProjectName: remoteIssue.project?.name ?? null,
+            paperclipIssueId: synced.id,
+            paperclipIssueIdentifier: synced.identifier ?? null,
+          });
+        }
+      } catch (error) {
+        failedIssues += 1;
+        const occurredAt = nowIso();
+        const duplicateIdentifier = extractDuplicateIdentifier(error);
+        activity.push({
+          id: buildSyncFailureId([
+            occurredAt,
+            mapping.companyId,
+            mapping.teamId,
+            remoteIssue.id,
+            remoteIssue.identifier,
+            summarizeError(error),
+          ]),
+          occurredAt,
+          companyId: mapping.companyId,
+          teamId: mapping.teamId,
+          direction: "pull",
+          result: "failure",
+          runType,
+          message: summarizeError(error),
+          linearIssueId: remoteIssue.id,
+          linearIdentifier: remoteIssue.identifier,
+          linearTitle: remoteIssue.title,
+          linearProjectName: remoteIssue.project?.name ?? null,
+          paperclipIssueIdentifier: duplicateIdentifier,
+        });
+        if (!retryCursor || remoteIssue.updatedAt < retryCursor) {
+          retryCursor = remoteIssue.updatedAt;
+        }
+        ctx.logger.error("Linear issue pull failed", {
+          companyId: mapping.companyId,
+          teamId: mapping.teamId,
+          linearIssueId: remoteIssue.id,
+          linearIdentifier: remoteIssue.identifier,
+          error: summarizeError(error),
+        });
+      }
+      if (!lastCursor || remoteIssue.updatedAt > lastCursor) {
+        lastCursor = remoteIssue.updatedAt;
+      }
     }
-    if (!lastCursor || remoteIssue.updatedAt > lastCursor) {
-      lastCursor = remoteIssue.updatedAt;
+
+    if (activity.length > 0) {
+      await appendSyncActivity(ctx, mapping, activity);
     }
+
+    const nextCursor = retryCursor ?? lastCursor;
+    const lastError = summarizeSyncFailures(failedIssues, syncedIssues);
+    await saveCheckpoint(ctx, mapping, {
+      lastRunAt: nowIso(),
+      lastCursor: nextCursor ?? undefined,
+      lastSuccessAt: failedIssues === 0 ? nowIso() : checkpoint.lastSuccessAt,
+      lastError,
+    });
+
+    return {
+      syncedIssues,
+      failedIssues,
+      lastCursor: nextCursor,
+      lastError,
+    };
+  } catch (error) {
+    const occurredAt = nowIso();
+    await appendSyncActivity(ctx, mapping, [{
+      id: buildSyncFailureId([
+        occurredAt,
+        mapping.companyId,
+        mapping.teamId,
+        "company-pull",
+        summarizeError(error),
+      ]),
+      occurredAt,
+      companyId: mapping.companyId,
+      teamId: mapping.teamId,
+      direction: "pull",
+      result: "failure",
+      runType,
+      message: summarizeError(error),
+    }]);
+    await saveCheckpoint(ctx, mapping, {
+      lastRunAt: occurredAt,
+      lastError: summarizeError(error),
+    });
+    throw error;
   }
-
-  await saveCheckpoint(ctx, mapping, {
-    lastRunAt: nowIso(),
-    lastCursor: lastCursor ?? undefined,
-    lastSuccessAt: nowIso(),
-    lastError: null,
-  });
-
-  return {
-    syncedIssues,
-    lastCursor,
-  };
 }
 
 async function previewCompanySyncFromLinear(
@@ -1310,6 +1465,28 @@ async function getOverviewData(ctx: PluginContext, companyId?: string | null) {
   };
 }
 
+async function getSyncActivityData(ctx: PluginContext, companyId?: string | null) {
+  const companies = await ctx.companies.list({ limit: 500, offset: 0 });
+  const config = await getConfig(ctx);
+  const summaries = await Promise.all(config.companyMappings?.map(async (mapping) => {
+    const company = companies.find((entry) => entry.id === mapping.companyId) ?? null;
+    return {
+      companyId: mapping.companyId,
+      companyName: company?.name ?? mapping.companyId,
+      teamId: mapping.teamId,
+      recentActivity: await getRecentSyncActivity(ctx, mapping),
+    };
+  }) ?? []);
+
+  return {
+    pluginId: PLUGIN_ID,
+    activeCompanyId: companyId ?? null,
+    companyCount: summaries.length,
+    activityCount: summaries.reduce((total, summary) => total + summary.recentActivity.length, 0),
+    companies: summaries,
+  };
+}
+
 async function getIssueLinkData(ctx: PluginContext, companyId: string, issueId: string) {
   const mapping = await getMapping(ctx, companyId);
   const issue = await ctx.issues.get(issueId, companyId);
@@ -1365,10 +1542,6 @@ const plugin = definePlugin({
         try {
           await syncCompanyFromLinear(ctx, mapping);
         } catch (error) {
-          await saveCheckpoint(ctx, mapping, {
-            lastRunAt: nowIso(),
-            lastError: summarizeError(error),
-          });
           ctx.logger.error("Linear pull failed", {
             companyId: mapping.companyId,
             teamId: mapping.teamId,
@@ -1385,6 +1558,11 @@ const plugin = definePlugin({
     ctx.data.register("overview", async (params) => {
       const companyId = typeof params.companyId === "string" ? params.companyId : null;
       return await getOverviewData(ctx, companyId);
+    });
+
+    ctx.data.register("sync-activity", async (params) => {
+      const companyId = typeof params.companyId === "string" ? params.companyId : null;
+      return await getSyncActivityData(ctx, companyId);
     });
 
     ctx.data.register("team-options", async (params) => {

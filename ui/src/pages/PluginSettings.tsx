@@ -28,6 +28,7 @@ import {
 } from "@/components/JsonSchemaForm";
 import {
   LINEAR_PLUGIN_KEY,
+  LinearPluginActivityPanel,
   LinearPluginSettings,
 } from "@/components/plugins/LinearPluginSettings";
 
@@ -461,6 +462,10 @@ export function PluginSettings() {
                   )}
                 </CardContent>
               </Card>
+
+              {hasBuiltInLinearSettings ? (
+                <LinearPluginActivityPanel pluginId={plugin.id} />
+              ) : null}
 
               {recentLogs && recentLogs.length > 0 ? (
                 <Card>

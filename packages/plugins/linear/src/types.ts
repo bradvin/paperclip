@@ -148,3 +148,20 @@ export interface SyncCheckpoint {
   lastError?: string | null;
   lastWebhookAt?: string;
 }
+
+export interface LinearSyncActivityRecord {
+  id: string;
+  occurredAt: string;
+  companyId: string;
+  teamId: string;
+  direction: "pull" | "push";
+  result: "success" | "failure";
+  runType: "incremental" | "full" | "manual" | "automatic";
+  message: string;
+  linearIssueId?: string | null;
+  linearIdentifier?: string | null;
+  linearTitle?: string | null;
+  linearProjectName?: string | null;
+  paperclipIssueId?: string | null;
+  paperclipIssueIdentifier?: string | null;
+}

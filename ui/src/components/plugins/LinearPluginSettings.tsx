@@ -7,6 +7,7 @@ import { useToast } from "@/context/ToastContext";
 import { pluginsApi } from "@/api/plugins";
 import { secretsApi } from "@/api/secrets";
 import { queryKeys } from "@/lib/queryKeys";
+import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -87,6 +88,33 @@ type LinearCompanySummary = {
 type LinearOverviewData = {
   companies: LinearCompanySummary[];
   linkedProjectCount?: number;
+};
+
+type LinearSyncActivityItem = {
+  id: string;
+  occurredAt: string;
+  direction: "pull" | "push";
+  result: "success" | "failure";
+  runType: "incremental" | "full" | "manual" | "automatic";
+  message: string;
+  linearIssueId?: string | null;
+  linearIdentifier?: string | null;
+  linearTitle?: string | null;
+  linearProjectName?: string | null;
+  paperclipIssueId?: string | null;
+  paperclipIssueIdentifier?: string | null;
+};
+
+type LinearSyncActivityData = {
+  activeCompanyId: string | null;
+  companyCount: number;
+  activityCount: number;
+  companies: Array<{
+    companyId: string;
+    companyName: string;
+    teamId: string;
+    recentActivity: LinearSyncActivityItem[];
+  }>;
 };
 
 type LinearTeamSummary = {
@@ -679,16 +707,20 @@ export function LinearPluginSettings({
         { companyId, full },
         companyId,
       );
-      return response.data as { syncedIssues?: number; lastCursor?: string | null };
+      return response.data as { syncedIssues?: number; failedIssues?: number; lastCursor?: string | null; lastError?: string | null };
     },
     onSuccess: (result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-overview"] });
+      queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-sync-activity"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.dashboard(pluginId) });
       const companyName = companyById.get(variables.companyId)?.name ?? "Company";
       pushToast({
         title: variables.full ? "Full Linear resync finished" : "Linear pull finished",
-        body: `${companyName}: ${result.syncedIssues ?? 0} issue${result.syncedIssues === 1 ? "" : "s"} synced.`,
-        tone: "success",
+        body:
+          result.failedIssues && result.failedIssues > 0
+            ? `${companyName}: ${result.syncedIssues ?? 0} issue${result.syncedIssues === 1 ? "" : "s"} synced, ${result.failedIssues} failed. Review Status for details.`
+            : `${companyName}: ${result.syncedIssues ?? 0} issue${result.syncedIssues === 1 ? "" : "s"} synced.`,
+        tone: result.failedIssues && result.failedIssues > 0 ? "warn" : "success",
       });
     },
     onError: (error: Error) => {
@@ -743,6 +775,7 @@ export function LinearPluginSettings({
     },
     onSuccess: (_result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-overview"] });
+      queryClient.invalidateQueries({ queryKey: ["plugins", pluginId, "linear-sync-activity"] });
       const companyName = companyById.get(variables.companyId)?.name ?? "Company";
       setDryRunResults((current) => {
         const next = { ...current };
@@ -1514,5 +1547,109 @@ export function LinearPluginSettings({
       </Card>
 
     </div>
+  );
+}
+
+function activityToneClasses(result: LinearSyncActivityItem["result"]) {
+  return result === "failure"
+    ? "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300"
+    : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+}
+
+export function LinearPluginActivityPanel({ pluginId }: { pluginId: string }) {
+  const { selectedCompanyId } = useCompany();
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["plugins", pluginId, "linear-sync-activity", selectedCompanyId ?? null],
+    queryFn: async () => {
+      const response = await pluginsApi.bridgeGetData(pluginId, "sync-activity", undefined, selectedCompanyId ?? null);
+      return response.data as LinearSyncActivityData;
+    },
+    enabled: Boolean(pluginId),
+    refetchInterval: 30000,
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Linear Sync Activity</CardTitle>
+        <CardDescription>
+          Recent pull activity for mapped Linear companies, including successful syncs and failures.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading Linear sync activity...</p>
+        ) : error ? (
+          <p className="text-sm text-destructive">{(error as Error).message}</p>
+        ) : data && data.companyCount > 0 ? (
+          data.companies.map((company) => (
+            <div key={company.companyId} className="space-y-3 rounded-lg border border-border/60 bg-background/40 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium text-foreground">{company.companyName}</div>
+                  <div className="text-xs text-muted-foreground">Team: {company.teamId}</div>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {company.recentActivity.length} recent event{company.recentActivity.length === 1 ? "" : "s"}
+                </div>
+              </div>
+
+              {company.recentActivity.length > 0 ? (
+                <div className="space-y-2">
+                  {company.recentActivity.map((entry) => (
+                    <div key={entry.id} className="rounded-md border border-border/60 bg-muted/30 p-2.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${activityToneClasses(entry.result)}`}>
+                          {entry.result === "failure" ? "Failed" : "Succeeded"}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {entry.direction} · {entry.runType} · {formatTimestamp(entry.occurredAt)}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-sm text-foreground">
+                        {entry.linearIdentifier ? <span className="font-medium">{entry.linearIdentifier}</span> : "Linear sync"}
+                        {entry.linearTitle ? <span>{` · ${entry.linearTitle}`}</span> : null}
+                      </div>
+                      {entry.linearProjectName ? (
+                        <div className="mt-1 text-xs text-muted-foreground">Project: {entry.linearProjectName}</div>
+                      ) : null}
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {entry.message}
+                        {entry.result === "failure" && entry.paperclipIssueIdentifier ? (
+                          <>
+                            {" "}
+                            <Link
+                              to={`/issues/${entry.paperclipIssueIdentifier}`}
+                              className="font-medium text-foreground underline underline-offset-4"
+                            >
+                              Open existing issue
+                            </Link>
+                          </>
+                        ) : null}
+                      </p>
+                      {entry.result === "success" && (entry.paperclipIssueId || entry.paperclipIssueIdentifier) ? (
+                        <div className="mt-1">
+                          <Link
+                            to={`/issues/${entry.paperclipIssueId ?? entry.paperclipIssueIdentifier!}`}
+                            className="text-xs font-medium text-foreground underline underline-offset-4"
+                          >
+                            Open created issue
+                          </Link>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground italic">No sync activity recorded yet.</p>
+              )}
+            </div>
+          ))
+        ) : (
+          <p className="text-sm text-muted-foreground italic">No Linear company mappings configured.</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

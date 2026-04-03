@@ -1647,6 +1647,210 @@ describe("Linear plugin", () => {
     expect(await harness.ctx.issues.list({ companyId: "co_1" })).toHaveLength(2);
   });
 
+  it("records successful and failed pull activity for partial syncs", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+            statusMappings: [
+              { linearStateId: "state_started", paperclipStatus: "in_progress" },
+            ],
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [],
+      projects: [],
+    });
+
+    const originalCreate = harness.ctx.issues.create.bind(harness.ctx.issues);
+    harness.ctx.issues.create = async (input) => {
+      if (input.title === "Broken issue") {
+        throw new Error("Forced create failure");
+      }
+      return await originalCreate(input);
+    };
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                createRemoteIssue({
+                  id: "linear_success",
+                  identifier: "ACME-901",
+                  title: "Working issue",
+                  updatedAt: "2026-03-20T10:00:00.000Z",
+                }),
+                createRemoteIssue({
+                  id: "linear_failure",
+                  identifier: "ACME-902",
+                  title: "Broken issue",
+                  updatedAt: "2026-03-20T10:05:00.000Z",
+                }),
+              ],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    const result = await harness.performAction<{
+      syncedIssues: number;
+      failedIssues: number;
+      lastCursor: string | null;
+      lastError: string | null;
+    }>("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    expect(result).toMatchObject({
+      syncedIssues: 1,
+      failedIssues: 1,
+      lastCursor: "2026-03-20T10:05:00.000Z",
+    });
+    expect(result.lastError).toContain("1 Linear issue failed");
+
+    const activity = await harness.getData<{
+      companies: Array<{
+        companyId: string;
+        recentActivity: Array<{
+          result: "success" | "failure";
+          linearIdentifier?: string | null;
+          message: string;
+        }>;
+      }>;
+    }>("sync-activity", {
+      companyId: "co_1",
+    });
+
+    const companyActivity = activity.companies.find((company) => company.companyId === "co_1")?.recentActivity ?? [];
+    expect(companyActivity).toHaveLength(2);
+    expect(companyActivity.some((entry) => entry.result === "success" && entry.linearIdentifier === "ACME-901")).toBe(true);
+    expect(companyActivity.some((entry) => entry.result === "failure" && entry.linearIdentifier === "ACME-902" && entry.message === "Forced create failure")).toBe(true);
+    expect(await harness.ctx.issues.list({ companyId: "co_1" })).toHaveLength(1);
+  });
+
+  it("stores the existing identifier on duplicate-identifier sync failures", async () => {
+    const harness = createTestHarness({
+      manifest,
+      config: {
+        companyMappings: [
+          {
+            companyId: "co_1",
+            teamId: "team_1",
+            apiTokenSecretRef: "secret.linear",
+            syncDirection: "bidirectional",
+            forceMatchIdentifier: true,
+            statusMappings: [
+              { linearStateId: "state_started", paperclipStatus: "in_progress" },
+            ],
+          },
+        ],
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    harness.seed({
+      companies: [createCompany()],
+      issues: [
+        createIssue({
+          id: "issue_existing",
+          companyId: "co_1",
+          identifier: "ACME-777",
+          issueNumber: 777,
+          title: "Existing hidden issue",
+          hiddenAt: NOW,
+        }),
+      ],
+      projects: [],
+    });
+
+    const originalCreate = harness.ctx.issues.create.bind(harness.ctx.issues);
+    harness.ctx.issues.create = async (input) => {
+      if (input.identifier === "ACME-777") {
+        throw new Error("Issue identifier already exists: ACME-777");
+      }
+      return await originalCreate(input);
+    };
+
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body ?? "{}")) as LinearGraphqlRequest;
+      if (request.query.includes("query LinearIssues")) {
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                createRemoteIssue({
+                  id: "linear_duplicate",
+                  identifier: "ACME-777",
+                  title: "Duplicate identifier issue",
+                  updatedAt: "2026-03-20T10:05:00.000Z",
+                }),
+              ],
+              pageInfo: {
+                hasNextPage: false,
+                endCursor: null,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`Unhandled Linear query: ${request.query}`);
+    }));
+
+    const result = await harness.performAction<{
+      syncedIssues: number;
+      failedIssues: number;
+      lastError: string | null;
+    }>("resync-company", {
+      companyId: "co_1",
+      full: true,
+    });
+
+    expect(result.syncedIssues).toBe(0);
+    expect(result.failedIssues).toBe(1);
+    expect(result.lastError).toContain("1 Linear issue failed");
+
+    const activity = await harness.getData<{
+      companies: Array<{
+        companyId: string;
+        recentActivity: Array<{
+          result: "success" | "failure";
+          linearIdentifier?: string | null;
+          paperclipIssueIdentifier?: string | null;
+          message: string;
+        }>;
+      }>;
+    }>("sync-activity", {
+      companyId: "co_1",
+    });
+
+    const duplicateEntry = activity.companies
+      .find((company) => company.companyId === "co_1")
+      ?.recentActivity.find((entry) => entry.linearIdentifier === "ACME-777" && entry.result === "failure");
+
+    expect(duplicateEntry).toMatchObject({
+      paperclipIssueIdentifier: "ACME-777",
+      message: "Issue identifier already exists: ACME-777",
+    });
+  });
+
   it("does not create duplicate Paperclip issues on repeated pull syncs when entity scope filters are unavailable", async () => {
     const harness = createTestHarness({
       manifest,
