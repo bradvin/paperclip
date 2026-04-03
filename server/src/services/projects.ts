@@ -1,6 +1,16 @@
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { projects, projectGoals, goals, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  budgetIncidents,
+  budgetPolicies,
+  costEvents,
+  financeEvents,
+  projects,
+  projectGoals,
+  goals,
+  projectWorkspaces,
+  workspaceRuntimeServices,
+} from "@paperclipai/db";
 import {
   PROJECT_COLORS,
   deriveProjectUrlKey,
@@ -517,15 +527,45 @@ export function projectService(db: Db) {
     },
 
     remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+      db.transaction(async (tx) => {
+        await tx
+          .update(costEvents)
+          .set({ projectId: null })
+          .where(eq(costEvents.projectId, id));
+
+        await tx
+          .update(financeEvents)
+          .set({ projectId: null })
+          .where(eq(financeEvents.projectId, id));
+
+        const projectPolicyIds = await tx
+          .select({ id: budgetPolicies.id })
+          .from(budgetPolicies)
+          .where(and(eq(budgetPolicies.scopeType, "project"), eq(budgetPolicies.scopeId, id)))
+          .then((rows) => rows.map((row) => row.id));
+
+        if (projectPolicyIds.length > 0) {
+          await tx
+            .delete(budgetIncidents)
+            .where(inArray(budgetIncidents.policyId, projectPolicyIds));
+        }
+
+        await tx
+          .delete(budgetIncidents)
+          .where(and(eq(budgetIncidents.scopeType, "project"), eq(budgetIncidents.scopeId, id)));
+
+        await tx
+          .delete(budgetPolicies)
+          .where(and(eq(budgetPolicies.scopeType, "project"), eq(budgetPolicies.scopeId, id)));
+
+        const row = await tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+      }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

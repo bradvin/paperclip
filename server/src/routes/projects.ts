@@ -19,6 +19,21 @@ export function projectRoutes(db: Db, storage: StorageService) {
   const svc = projectService(db);
   const issuesSvc = issueService(db);
 
+  async function wipeProjectIssues(projectId: string) {
+    const result = await issuesSvc.removeByProject(projectId);
+    for (const attachment of result.attachments) {
+      try {
+        await storage.deleteObject(attachment.companyId, attachment.objectKey);
+      } catch (err) {
+        logger.warn(
+          { err, projectId, attachmentId: attachment.id },
+          "failed to delete attachment object during project issue delete",
+        );
+      }
+    }
+    return result.deletedIssueCount;
+  }
+
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
     const requestedCompanyId =
@@ -165,17 +180,7 @@ export function projectRoutes(db: Db, storage: StorageService) {
     }
     assertCompanyAccess(req, existing.companyId);
 
-    const result = await issuesSvc.removeByProject(id);
-    for (const attachment of result.attachments) {
-      try {
-        await storage.deleteObject(attachment.companyId, attachment.objectKey);
-      } catch (err) {
-        logger.warn(
-          { err, projectId: id, attachmentId: attachment.id },
-          "failed to delete attachment object during project issue delete",
-        );
-      }
-    }
+    const deletedIssueCount = await wipeProjectIssues(id);
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -188,13 +193,13 @@ export function projectRoutes(db: Db, storage: StorageService) {
       entityType: "project",
       entityId: existing.id,
       details: {
-        deletedIssueCount: result.deletedIssueCount,
+        deletedIssueCount,
       },
     });
 
     res.json({
       projectId: existing.id,
-      deletedIssueCount: result.deletedIssueCount,
+      deletedIssueCount,
     });
   });
 
@@ -315,6 +320,7 @@ export function projectRoutes(db: Db, storage: StorageService) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    const deletedIssueCount = await wipeProjectIssues(id);
     const project = await svc.remove(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -327,9 +333,13 @@ export function projectRoutes(db: Db, storage: StorageService) {
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
+      runId: actor.runId,
       action: "project.deleted",
       entityType: "project",
       entityId: project.id,
+      details: {
+        deletedIssueCount,
+      },
     });
 
     res.json(project);
