@@ -247,6 +247,58 @@ function createDevProject(projectId = "project-dev-1") {
   };
 }
 
+function buildReviewHandoffComment(input: {
+  routeTo: "testing" | "merging";
+  targetRole: "qa" | "ceo";
+  commit?: string;
+  branch?: string;
+  summary?: string;
+  verification?: string;
+  reviewFocus?: string;
+  knownRisks?: string;
+  blockingIssues?: string;
+}) {
+  return [
+    "Handoff type: review",
+    `Route to: ${input.routeTo}`,
+    `Target role: ${input.targetRole}`,
+    `Commit: ${input.commit ?? "1a2b3c4d"}`,
+    `Branch: ${input.branch ?? "feature/test-handoff"}`,
+    `Summary: ${input.summary ?? "Completed the requested handoff work."}`,
+    `Verification: ${input.verification ?? "Relevant checks passed."}`,
+    `Review focus: ${input.reviewFocus ?? "Inspect the changed workflow path."}`,
+    `Known risks: ${input.knownRisks ?? "none"}`,
+    `Blocking issues: ${input.blockingIssues ?? "none"}`,
+  ].join("\n");
+}
+
+function buildReworkHandoffComment(input?: {
+  testedCommit?: string;
+  failureSummary?: string;
+  expectedBehavior?: string;
+  observedBehavior?: string;
+  reproSteps?: string;
+  evidence?: string;
+  requiredFix?: string;
+  returnCriteria?: string;
+  severity?: "low" | "medium" | "high" | "critical";
+}) {
+  return [
+    "Handoff type: rework",
+    "Route to: rework",
+    "Target role: engineer_or_devops",
+    `Tested commit: ${input?.testedCommit ?? "1a2b3c4d"}`,
+    `Failure summary: ${input?.failureSummary ?? "Regression still present."}`,
+    `Expected behavior: ${input?.expectedBehavior ?? "The issue should stay resolved."}`,
+    `Observed behavior: ${input?.observedBehavior ?? "The issue reproduces in QA."}`,
+    `Repro steps: ${input?.reproSteps ?? "Open the flow and repeat the failing action."}`,
+    `Evidence: ${input?.evidence ?? "Manual QA reproduced the bug."}`,
+    `Required fix: ${input?.requiredFix ?? "Address the regression and add coverage."}`,
+    `Return criteria: ${input?.returnCriteria ?? "Bug no longer reproduces in QA."}`,
+    `Severity: ${input?.severity ?? "high"}`,
+  ].join("\n");
+}
+
 describe("issue dependency route behavior", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -983,7 +1035,14 @@ describe("issue dependency route behavior", () => {
         status: "testing",
         assigneeAgentId: null,
         assigneeUserId: null,
-        comment: "Implementation complete. Ready for QA.",
+        comment: buildReviewHandoffComment({
+          routeTo: "testing",
+          targetRole: "qa",
+          branch: "feature/pap-10",
+          summary: "Implementation is complete and ready for QA.",
+          verification: "Unit tests passed and the repro no longer fails locally.",
+          reviewFocus: "QA should verify the regression path and neighboring auth flows.",
+        }),
       });
 
     expect(res.status).toBe(200);
@@ -1000,6 +1059,52 @@ describe("issue dependency route behavior", () => {
       }),
     );
     expect(res.body.assigneeAgentId).toBe("qa-1");
+  });
+
+  it("rejects engineer handoffs to testing without a structured review handoff comment", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-testing-structure",
+      companyId: "company-1",
+      identifier: "PAP-200B",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-1",
+      queuedStatusBeforeCheckout: "todo",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-testing-structure")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        comment: "Implementation complete. Ready for QA.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("structured review handoff comment");
+    expect(res.body.details.missingFields).toEqual([
+      "Handoff type:",
+      "Route to:",
+      "Target role:",
+      "Commit:",
+      "Branch:",
+      "Summary:",
+      "Verification:",
+      "Review focus:",
+      "Known risks:",
+      "Blocking issues:",
+    ]);
+    expect(res.body.details.nextAction).toContain("QA receives the commit");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rejects engineer attempts to move a development issue directly to done", async () => {
@@ -1066,10 +1171,73 @@ describe("issue dependency route behavior", () => {
         status: "testing",
         assigneeAgentId: null,
         assigneeUserId: null,
+        comment: buildReviewHandoffComment({
+          routeTo: "testing",
+          targetRole: "qa",
+          branch: "feature/pap-202",
+          summary: "Implementation is complete and ready for QA.",
+          verification: "Local validation passed before handoff.",
+          reviewFocus: "Verify the original bug path and nearby regressions.",
+        }),
       });
 
     expect(res.status).toBe(409);
     expect(res.body.error).toContain("Commit tracked changes before handing off this development issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects QA handoffs to rework without a structured rework handoff comment", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-rework-structure",
+      companyId: "company-1",
+      identifier: "PAP-202B",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-1",
+      queuedStatusBeforeCheckout: "testing",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+    mockAgentService.getById.mockResolvedValue({
+      id: "00000000-0000-4000-8000-0000000000a1",
+      companyId: "company-1",
+      role: "qa",
+      status: "idle",
+      permissions: {},
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-rework-structure")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "rework",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        comment: "QA found issues that need another dev pass.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("structured rework handoff comment");
+    expect(res.body.details.missingFields).toEqual([
+      "Handoff type:",
+      "Route to:",
+      "Target role:",
+      "Tested commit:",
+      "Failure summary:",
+      "Expected behavior:",
+      "Observed behavior:",
+      "Repro steps:",
+      "Evidence:",
+      "Required fix:",
+      "Return criteria:",
+      "Severity:",
+    ]);
+    expect(res.body.details.nextAction).toContain("tested commit");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -1141,6 +1309,14 @@ describe("issue dependency route behavior", () => {
         status: "merging",
         assigneeAgentId: null,
         assigneeUserId: null,
+        comment: buildReviewHandoffComment({
+          routeTo: "merging",
+          targetRole: "ceo",
+          branch: "feature/pap-203",
+          summary: "QA passed and the change is ready for merge.",
+          verification: "Regression repro passed and test coverage is green.",
+          reviewFocus: "Confirm the branch is ready to merge and push cleanly.",
+        }),
       });
 
     expect(res.status).toBe(200);
@@ -1148,6 +1324,59 @@ describe("issue dependency route behavior", () => {
       roles: ["ceo"],
     });
     expect(res.body.assigneeAgentId).toBe("ceo-1");
+  });
+
+  it("rejects QA handoffs to merging without a structured review handoff comment", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-merge-structure",
+      companyId: "company-1",
+      identifier: "PAP-203C",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-1",
+      queuedStatusBeforeCheckout: "testing",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+    mockAgentService.getById.mockResolvedValue({
+      id: "00000000-0000-4000-8000-0000000000a1",
+      companyId: "company-1",
+      role: "qa",
+      status: "idle",
+      permissions: {},
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-merge-structure")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "merging",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        comment: "QA passed. Ready for CEO merge and push.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("structured review handoff comment");
+    expect(res.body.details.missingFields).toEqual([
+      "Handoff type:",
+      "Route to:",
+      "Target role:",
+      "Commit:",
+      "Branch:",
+      "Summary:",
+      "Verification:",
+      "Review focus:",
+      "Known risks:",
+      "Blocking issues:",
+    ]);
+    expect(res.body.details.nextAction).toContain("CEO receives the commit");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("auto-routes development issues moved from testing to merging to the CEO", async () => {
@@ -1259,6 +1488,14 @@ describe("issue dependency route behavior", () => {
         status: "testing",
         assigneeAgentId: null,
         assigneeUserId: null,
+        comment: buildReviewHandoffComment({
+          routeTo: "testing",
+          targetRole: "qa",
+          branch: "feature/pap-204",
+          summary: "Implementation is complete and awaiting QA pickup.",
+          verification: "Relevant checks passed.",
+          reviewFocus: "Validate the completed fix and confirm the regression is closed.",
+        }),
       });
 
     expect(res.status).toBe(200);

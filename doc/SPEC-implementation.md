@@ -417,6 +417,7 @@ Side effects:
 - checkout remembers the prior queued workflow status so release can restore the same stage
 - entering `done` sets `completed_at`
 - entering `cancelled` sets `cancelled_at`
+- git-backed development issues reject malformed structured handoff comments for engineer/devops `-> testing`, QA `-> rework`, and QA `-> merging`
 
 ## 8.3 Approval Status
 

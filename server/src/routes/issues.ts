@@ -59,6 +59,38 @@ const HUMAN_REVIEW_COMMENT_LABELS = {
   requestedAction: "Requested action:",
   afterResolutionRoute: "After resolution route to:",
 } as const;
+const REVIEW_HANDOFF_COMMENT_LABELS = {
+  handoffType: "Handoff type:",
+  routeTo: "Route to:",
+  targetRole: "Target role:",
+  commit: "Commit:",
+  branch: "Branch:",
+  summary: "Summary:",
+  verification: "Verification:",
+  reviewFocus: "Review focus:",
+  knownRisks: "Known risks:",
+  blockingIssues: "Blocking issues:",
+} as const;
+const REWORK_HANDOFF_COMMENT_LABELS = {
+  handoffType: "Handoff type:",
+  routeTo: "Route to:",
+  targetRole: "Target role:",
+  testedCommit: "Tested commit:",
+  failureSummary: "Failure summary:",
+  expectedBehavior: "Expected behavior:",
+  observedBehavior: "Observed behavior:",
+  reproSteps: "Repro steps:",
+  evidence: "Evidence:",
+  requiredFix: "Required fix:",
+  returnCriteria: "Return criteria:",
+  severity: "Severity:",
+} as const;
+const REVIEW_HANDOFF_TARGET_ROLE_BY_STATUS = {
+  testing: "qa",
+  merging: "ceo",
+} as const;
+const REWORK_HANDOFF_TARGET_ROLE = "engineer_or_devops";
+const REWORK_HANDOFF_SEVERITIES = new Set(["low", "medium", "high", "critical"]);
 
 type WorkflowProject = Awaited<ReturnType<ReturnType<typeof projectService>["getById"]>>;
 type WorkflowExecutionWorkspace = Awaited<ReturnType<ReturnType<typeof executionWorkspaceService>["getById"]>>;
@@ -96,6 +128,21 @@ function readStructuredCommentField(commentBody: string, label: string) {
   return value.length > 0 ? value : null;
 }
 
+function collectStructuredCommentFields<T extends Record<string, string>>(commentBody: string | null | undefined, labels: T) {
+  const body = commentBody ?? "";
+  const values = Object.fromEntries(
+    Object.entries(labels).map(([key, label]) => [key, readStructuredCommentField(body, label)]),
+  ) as { [K in keyof T]: string | null };
+  const missingFields = Object.entries(labels)
+    .filter(([key]) => !values[key as keyof T])
+    .map(([, label]) => label);
+  return { values, missingFields };
+}
+
+function normalizeStructuredCommentValue(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? null;
+}
+
 function validateHumanReviewComment(commentBody: string | null | undefined) {
   if (!commentBody?.trim()) {
     return {
@@ -126,6 +173,88 @@ function validateHumanReviewComment(commentBody: string | null | undefined) {
         ? afterResolutionRouteRaw
         : null,
   };
+}
+
+function buildReviewHandoffRequiredFields(status: keyof typeof REVIEW_HANDOFF_TARGET_ROLE_BY_STATUS) {
+  return [
+    "Handoff type: review",
+    `Route to: ${status}`,
+    `Target role: ${REVIEW_HANDOFF_TARGET_ROLE_BY_STATUS[status]}`,
+    "Commit: <sha>",
+    "Branch: <branch-name>",
+    "Summary: <one-line summary>",
+    "Verification: <tests/checks run and result>",
+    "Review focus: <what the next agent should inspect>",
+    "Known risks: <known gaps or none>",
+    "Blocking issues: <none or short note>",
+  ];
+}
+
+function validateReviewHandoffComment(
+  commentBody: string | null | undefined,
+  expectedStatus: keyof typeof REVIEW_HANDOFF_TARGET_ROLE_BY_STATUS,
+) {
+  const { values, missingFields } = collectStructuredCommentFields(commentBody, REVIEW_HANDOFF_COMMENT_LABELS);
+  const invalidFields: string[] = [];
+
+  const handoffType = normalizeStructuredCommentValue(values.handoffType);
+  const routeTo = normalizeStructuredCommentValue(values.routeTo);
+  const targetRole = normalizeStructuredCommentValue(values.targetRole);
+  const expectedTargetRole = REVIEW_HANDOFF_TARGET_ROLE_BY_STATUS[expectedStatus];
+
+  if (handoffType && handoffType !== "review") {
+    invalidFields.push(`${REVIEW_HANDOFF_COMMENT_LABELS.handoffType} expected review`);
+  }
+  if (routeTo && routeTo !== expectedStatus) {
+    invalidFields.push(`${REVIEW_HANDOFF_COMMENT_LABELS.routeTo} expected ${expectedStatus}`);
+  }
+  if (targetRole && targetRole !== expectedTargetRole) {
+    invalidFields.push(`${REVIEW_HANDOFF_COMMENT_LABELS.targetRole} expected ${expectedTargetRole}`);
+  }
+
+  return { missingFields, invalidFields };
+}
+
+function buildReworkHandoffRequiredFields() {
+  return [
+    "Handoff type: rework",
+    "Route to: rework",
+    `Target role: ${REWORK_HANDOFF_TARGET_ROLE}`,
+    "Tested commit: <sha>",
+    "Failure summary: <one-line problem statement>",
+    "Expected behavior: <what should happen>",
+    "Observed behavior: <what actually happened>",
+    "Repro steps: <compact repro>",
+    "Evidence: <tests, logs, screenshots, or manual result>",
+    "Required fix: <what must change before retest>",
+    "Return criteria: <what QA will accept next time>",
+    "Severity: low | medium | high | critical",
+  ];
+}
+
+function validateReworkHandoffComment(commentBody: string | null | undefined) {
+  const { values, missingFields } = collectStructuredCommentFields(commentBody, REWORK_HANDOFF_COMMENT_LABELS);
+  const invalidFields: string[] = [];
+
+  const handoffType = normalizeStructuredCommentValue(values.handoffType);
+  const routeTo = normalizeStructuredCommentValue(values.routeTo);
+  const targetRole = normalizeStructuredCommentValue(values.targetRole);
+  const severity = normalizeStructuredCommentValue(values.severity);
+
+  if (handoffType && handoffType !== "rework") {
+    invalidFields.push(`${REWORK_HANDOFF_COMMENT_LABELS.handoffType} expected rework`);
+  }
+  if (routeTo && routeTo !== "rework") {
+    invalidFields.push(`${REWORK_HANDOFF_COMMENT_LABELS.routeTo} expected rework`);
+  }
+  if (targetRole && targetRole !== REWORK_HANDOFF_TARGET_ROLE) {
+    invalidFields.push(`${REWORK_HANDOFF_COMMENT_LABELS.targetRole} expected ${REWORK_HANDOFF_TARGET_ROLE}`);
+  }
+  if (severity && !REWORK_HANDOFF_SEVERITIES.has(severity)) {
+    invalidFields.push(`${REWORK_HANDOFF_COMMENT_LABELS.severity} expected low | medium | high | critical`);
+  }
+
+  return { missingFields, invalidFields };
 }
 
 export function issueRoutes(db: Db, storage: StorageService) {
@@ -491,6 +620,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
           nextAction: "Hand implementation to testing, escalate to human_review, or mark it blocked.",
         });
       }
+      if (requestedStatus === "testing") {
+        const handoff = validateReviewHandoffComment(commentBody, "testing");
+        if (handoff.missingFields.length > 0 || handoff.invalidFields.length > 0) {
+          throw unprocessable("Engineering handoffs to testing require a structured review handoff comment", {
+            missingFields: handoff.missingFields,
+            invalidFields: handoff.invalidFields,
+            requiredCommentFields: buildReviewHandoffRequiredFields("testing"),
+            nextAction:
+              "Include the structured review handoff comment so QA receives the commit, verification, review focus, and risk context.",
+          });
+        }
+      }
       return actorAgent;
     }
 
@@ -499,6 +640,30 @@ export function issueRoutes(db: Db, storage: StorageService) {
         throw unprocessable("QA can only exit active testing work to rework, merging, human_review, or blocked", {
           nextAction: "Route failures to rework, passes to merging, or escalate via human_review/blocked.",
         });
+      }
+      if (requestedStatus === "merging") {
+        const handoff = validateReviewHandoffComment(commentBody, "merging");
+        if (handoff.missingFields.length > 0 || handoff.invalidFields.length > 0) {
+          throw unprocessable("QA handoffs to merging require a structured review handoff comment", {
+            missingFields: handoff.missingFields,
+            invalidFields: handoff.invalidFields,
+            requiredCommentFields: buildReviewHandoffRequiredFields("merging"),
+            nextAction:
+              "Include the structured review handoff comment so the CEO receives the commit, verification, review focus, and risk context.",
+          });
+        }
+      }
+      if (requestedStatus === "rework") {
+        const handoff = validateReworkHandoffComment(commentBody);
+        if (handoff.missingFields.length > 0 || handoff.invalidFields.length > 0) {
+          throw unprocessable("QA handoffs to rework require a structured rework handoff comment", {
+            missingFields: handoff.missingFields,
+            invalidFields: handoff.invalidFields,
+            requiredCommentFields: buildReworkHandoffRequiredFields(),
+            nextAction:
+              "Include the structured rework handoff comment so engineering receives the tested commit, repro steps, evidence, required fix, and return criteria.",
+          });
+        }
       }
       return actorAgent;
     }

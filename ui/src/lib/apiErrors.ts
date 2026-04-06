@@ -30,6 +30,11 @@ export function formatApiErrorMessage(error: unknown, fallback = "Unknown error"
       parts.push(`Missing fields: ${missingFields.join(", ")}`);
     }
 
+    const invalidFields = readStringList((details as { invalidFields?: unknown }).invalidFields);
+    if (invalidFields.length > 0) {
+      parts.push(`Invalid fields: ${invalidFields.join(", ")}`);
+    }
+
     const invalidAfterResolutionRoute = readNonEmptyString(
       (details as { invalidAfterResolutionRoute?: unknown }).invalidAfterResolutionRoute,
     );

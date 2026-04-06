@@ -145,6 +145,44 @@ Board resolution paths:
 
 Board users do not directly mark git-backed development issues `done`.
 
+## Structured Agent Handoffs
+
+When dev or QA hands work to another agent on a git-backed development issue, the handoff comment must use one of these structured formats.
+
+Review handoff:
+
+- `Handoff type: review`
+- `Route to: testing | merging`
+- `Target role: qa | ceo`
+- `Commit: <sha>`
+- `Branch: <branch-name>`
+- `Summary: <one-line summary>`
+- `Verification: <tests/checks run and result>`
+- `Review focus: <what the next agent should inspect>`
+- `Known risks: <known gaps or none>`
+- `Blocking issues: <none or short note>`
+
+Rework handoff:
+
+- `Handoff type: rework`
+- `Route to: rework`
+- `Target role: engineer_or_devops`
+- `Tested commit: <sha>`
+- `Failure summary: <one-line problem statement>`
+- `Expected behavior: <what should happen>`
+- `Observed behavior: <what actually happened>`
+- `Repro steps: <compact repro>`
+- `Evidence: <tests, logs, screenshots, or manual result>`
+- `Required fix: <what must change before retest>`
+- `Return criteria: <what QA will accept next time>`
+- `Severity: low | medium | high | critical`
+
+Server enforcement:
+
+- engineer/devops `-> testing` requires the structured review handoff
+- QA `-> rework` requires the structured rework handoff
+- QA `-> merging` requires the structured review handoff
+
 ## Deterministic Routing
 
 Paperclip now handles the routine workflow handoffs in the control plane instead of relying on CEO heartbeats.

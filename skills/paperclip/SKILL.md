@@ -79,15 +79,15 @@ When writing issue descriptions or comments, follow the ticket-linking rule in *
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "testing", "assigneeAgentId": null, "assigneeUserId": null, "comment": "Implementation complete. Ready for QA." }
+{ "status": "testing", "assigneeAgentId": null, "assigneeUserId": null, "comment": "Handoff type: review\nRoute to: testing\nTarget role: qa\nCommit: <sha>\nBranch: <branch-name>\nSummary: <one-line summary>\nVerification: <tests/checks run and result>\nReview focus: <what QA should inspect>\nKnown risks: <known gaps or none>\nBlocking issues: <none or short note>" }
 
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "rework", "assigneeAgentId": null, "assigneeUserId": null, "comment": "QA found issues that need another development pass." }
+{ "status": "rework", "assigneeAgentId": null, "assigneeUserId": null, "comment": "Handoff type: rework\nRoute to: rework\nTarget role: engineer_or_devops\nTested commit: <sha>\nFailure summary: <one-line problem statement>\nExpected behavior: <what should happen>\nObserved behavior: <what actually happened>\nRepro steps: <compact repro>\nEvidence: <tests, logs, screenshots, or manual result>\nRequired fix: <what must change before retest>\nReturn criteria: <what QA will accept next time>\nSeverity: low | medium | high | critical" }
 
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "merging", "assigneeAgentId": null, "assigneeUserId": null, "comment": "QA passed. Ready for CEO merge and push." }
+{ "status": "merging", "assigneeAgentId": null, "assigneeUserId": null, "comment": "Handoff type: review\nRoute to: merging\nTarget role: ceo\nCommit: <sha>\nBranch: <branch-name>\nSummary: <one-line summary>\nVerification: <tests/checks run and result>\nReview focus: <what the CEO should inspect before merge>\nKnown risks: <known gaps or none>\nBlocking issues: <none or short note>" }
 
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
@@ -116,6 +116,42 @@ If you are the assignee agent and you have finished implementation, you may clea
 - human-intervention handoff: set `status = human_review`, `assigneeAgentId = null`, `assigneeUserId = null`
 
 When implementation is complete, always move the issue to `testing`. Use `human_review` only if progress requires a human decision, credential, permission, approval, or manual out-of-band action. Never use `human_review` to mean “please review my work” or “I am done.”
+
+Structured agent-to-agent handoff comments are mandatory on git-backed development issues:
+
+- engineer/devops `-> testing` uses the structured review handoff
+- QA `-> rework` uses the structured rework handoff
+- QA `-> merging` uses the structured review handoff
+
+Structured review handoff fields:
+
+- `Handoff type: review`
+- `Route to: testing | merging`
+- `Target role: qa | ceo`
+- `Commit: <sha>`
+- `Branch: <branch-name>`
+- `Summary: <one-line summary>`
+- `Verification: <tests/checks run and result>`
+- `Review focus: <what the next agent should inspect>`
+- `Known risks: <known gaps or none>`
+- `Blocking issues: <none or short note>`
+
+Structured rework handoff fields:
+
+- `Handoff type: rework`
+- `Route to: rework`
+- `Target role: engineer_or_devops`
+- `Tested commit: <sha>`
+- `Failure summary: <one-line problem statement>`
+- `Expected behavior: <what should happen>`
+- `Observed behavior: <what actually happened>`
+- `Repro steps: <compact repro>`
+- `Evidence: <tests, logs, screenshots, or manual result>`
+- `Required fix: <what must change before retest>`
+- `Return criteria: <what QA will accept next time>`
+- `Severity: low | medium | high | critical`
+
+Server policy rejects engineer/devops and QA handoffs to another agent if these structured comments are missing or malformed.
 
 Any agent handoff to `human_review` must include a structured justification comment with these exact lines:
 

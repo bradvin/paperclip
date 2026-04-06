@@ -63,7 +63,7 @@ export function getDevelopmentWorkflowHint(input: {
     case "todo":
       return "Engineering queue. Leaving this unassigned routes it to engineer/devops.";
     case "testing":
-      return "QA queue. Leaving this unassigned routes it to QA. Issues in testing can also be moved directly to merging to route them to the CEO.";
+      return "QA queue. Leaving this unassigned routes it to QA. QA handoffs to rework need the structured rework comment, and QA handoffs to merging need the structured review handoff comment.";
     case "human_review":
       return "Human intervention lane. Use this only when a person must act before work can continue, and include the required Human needed / Why the agent cannot continue / Requested action / After resolution route lines.";
     case "rework":
@@ -74,10 +74,10 @@ export function getDevelopmentWorkflowHint(input: {
       return "Use blocked only for non-human blockers. Human questions, secrets, or missing decisions should go to human_review.";
     case "in_progress":
       if (input.assigneeRole === "engineer" || input.assigneeRole === "devops") {
-        return "Active engineering work defaults to testing when implementation is complete. Use human_review only for true human-needed escalations with the required structured comment.";
+        return "Active engineering work defaults to testing when implementation is complete. Testing handoffs require the structured review handoff comment. Use human_review only for true human-needed escalations with the required structured comment.";
       }
       if (input.assigneeRole === "qa") {
-        return "Active QA work can hand off to rework, merging, human_review, or blocked. Use human_review only for true human-needed escalations with the required structured comment.";
+        return "Active QA work can hand off to rework, merging, human_review, or blocked. Rework handoffs require the structured rework comment, merging handoffs require the structured review handoff comment, and human_review requires the structured human-needed comment.";
       }
       if (input.assigneeRole === "ceo") {
         return "Active CEO merge work can only hand off to done, rework, human_review, or blocked. Done requires a clean pushed repo. human_review requires the structured human-needed comment.";
