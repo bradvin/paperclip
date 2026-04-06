@@ -15,12 +15,14 @@ interface StatusIconProps {
   onChange?: (status: string) => void;
   className?: string;
   showLabel?: boolean;
+  allowedStatuses?: string[];
 }
 
-export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+export function StatusIcon({ status, onChange, className, showLabel, allowedStatuses }: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
+  const visibleStatuses = allowedStatuses && allowedStatuses.length > 0 ? allowedStatuses : allStatuses;
 
   const circle = (
     <span
@@ -47,10 +49,10 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
   ) : circle;
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+      <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="start">
-        {allStatuses.map((s) => (
+        {visibleStatuses.map((s) => (
           <Button
             key={s}
             variant="ghost"

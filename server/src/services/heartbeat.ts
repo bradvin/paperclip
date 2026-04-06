@@ -152,6 +152,16 @@ async function ensureManagedProjectWorkspace(input: {
   }
 }
 
+async function usesGitBackedPrimaryWorkspace(db: Db, projectId: string) {
+  const workspace = await db
+    .select({ sourceType: projectWorkspaces.sourceType })
+    .from(projectWorkspaces)
+    .where(eq(projectWorkspaces.projectId, projectId))
+    .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+    .then((rows) => rows[0] ?? null);
+  return workspace?.sourceType === "git_repo";
+}
+
 const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
@@ -1350,6 +1360,7 @@ export function heartbeatService(db: Db) {
         id: issues.id,
         identifier: issues.identifier,
         title: issues.title,
+        projectId: issues.projectId,
         priority: issues.priority,
         createdAt: issues.createdAt,
       })
@@ -1430,6 +1441,9 @@ export function heartbeatService(db: Db) {
         const selectedAssignee = await agentsSvc.selectDeterministicAssignee(agent.companyId, {
           roles: ["engineer", "devops"],
         });
+        if (!selectedAssignee && issue.projectId && await usesGitBackedPrimaryWorkspace(db, issue.projectId)) {
+          continue;
+        }
         const fallbackCeo = selectedAssignee ? null : await agentsSvc.getCompanyCeo(agent.companyId);
         const eligibleFallbackCeo = fallbackCeo && isInvokableAgentStatus(fallbackCeo.status) ? fallbackCeo : null;
         const targetAssignee = selectedAssignee ?? eligibleFallbackCeo;

@@ -11,6 +11,7 @@ import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { getBoardStatusOptions, getDevelopmentWorkflowHint } from "../lib/issue-workflow";
 import { queryKeys } from "../lib/queryKeys";
 import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
 import { useProjectOrder } from "../hooks/useProjectOrder";
@@ -303,7 +304,7 @@ export function IssueDetail() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? "local-board";
   const { orderedProjects } = useProjectOrder({
     projects: projects ?? [],
     companyId: selectedCompanyId,
@@ -330,6 +331,15 @@ export function IssueDetail() {
     for (const a of agents ?? []) map.set(a.id, a);
     return map;
   }, [agents]);
+  const currentAssigneeRole = issue?.assigneeAgentId ? agentMap.get(issue.assigneeAgentId)?.role ?? null : null;
+  const allowedStatusOptions = issue ? getBoardStatusOptions(issue, issue.project ?? null) : undefined;
+  const developmentWorkflowHint = issue
+    ? getDevelopmentWorkflowHint({
+        issue,
+        project: issue.project ?? null,
+        assigneeRole: currentAssigneeRole,
+      })
+    : null;
 
   const mentionOptions = useMemo<MentionOption[]>(() => {
     const options: MentionOption[] = [];
@@ -803,6 +813,7 @@ export function IssueDetail() {
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
+            allowedStatuses={allowedStatusOptions}
             onChange={(status) => updateIssue.mutate({ status })}
           />
           <PriorityIcon
@@ -856,6 +867,11 @@ export function IssueDetail() {
               )}
             </div>
           )}
+        {developmentWorkflowHint && (
+          <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            {developmentWorkflowHint}
+          </div>
+        )}
 
           <div className="ml-auto flex items-center gap-0.5 md:hidden shrink-0">
             <Button

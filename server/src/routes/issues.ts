@@ -14,6 +14,7 @@ import {
   upsertIssueDocumentSchema,
   updateIssueSchema,
 } from "@paperclipai/shared";
+import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import {
@@ -21,6 +22,7 @@ import {
   agentService,
   executionWorkspaceService,
   goalService,
+  gitWorkspaceService,
   heartbeatService,
   issueApprovalService,
   issueService,
@@ -30,20 +32,49 @@ import {
   workProductService,
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
-import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { conflict, forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
-import { isInvokableAgentStatus } from "../services/issue-workflow.js";
+import {
+  assertDevelopmentIssueStatusTransition,
+  isInvokableAgentStatus,
+} from "../services/issue-workflow.js";
 import {
   AGENT_BENCHMARK_REPO_REF,
   AGENT_BENCHMARK_REPO_URL,
   loadSmallSetBenchmarkSuite,
 } from "../services/agent-benchmark-dummy.js";
+import { isGitBackedDevelopmentProject } from "../services/git-workspaces.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
-const AGENT_SELF_UNASSIGNABLE_STATUSES = new Set(["testing", "rework"]);
+const LOCAL_BOARD_USER_ID = "local-board";
+const DEV_ROUTABLE_QUEUE_STATUSES = new Set(["todo", "testing", "rework", "merging"]);
+const AGENT_SELF_UNASSIGNABLE_STATUSES = new Set(["testing", "rework", "merging", "in_review"]);
 const AGENT_ROUTABLE_STATUSES = new Set(["todo", "testing", "rework", "merging"]);
+
+type WorkflowProject = Awaited<ReturnType<ReturnType<typeof projectService>["getById"]>>;
+type WorkflowExecutionWorkspace = Awaited<ReturnType<ReturnType<typeof executionWorkspaceService>["getById"]>>;
+
+type IssueWorkflowContext = {
+  project: WorkflowProject | null;
+  executionWorkspace: WorkflowExecutionWorkspace | null;
+  isDevelopmentIssue: boolean;
+};
+
+type AutoRouteSuccess = {
+  routeType: "agent" | "user";
+  status: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  reason: string;
+};
+
+type AutoRouteFailure = {
+  status: string;
+  reason: string;
+  requiredRole: "engineer_or_devops" | "qa" | "ceo" | "board_user";
+};
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -51,6 +82,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
   const agentsSvc = agentService(db);
+  const gitWorkspaces = gitWorkspaceService();
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
@@ -120,60 +152,473 @@ export function issueRoutes(db: Db, storage: StorageService) {
     throw unauthorized();
   }
 
-  async function maybeAutoRouteIssue(issue: Awaited<ReturnType<typeof svc.getById>>) {
-    if (!issue) return { issue: null, autoRouted: null };
-    if (issue.hiddenAt) return { issue, autoRouted: null };
-    if (issue.assigneeAgentId || issue.assigneeUserId) return { issue, autoRouted: null };
+  async function loadIssueWorkflowContext(
+    issue: Pick<Issue, "projectId" | "executionWorkspaceId" | "projectWorkspaceId">,
+  ): Promise<IssueWorkflowContext> {
+    const [project, executionWorkspace] = await Promise.all([
+      issue.projectId ? projectsSvc.getById(issue.projectId) : Promise.resolve(null),
+      issue.executionWorkspaceId ? executionWorkspacesSvc.getById(issue.executionWorkspaceId) : Promise.resolve(null),
+    ]);
+
+    return {
+      project,
+      executionWorkspace,
+      isDevelopmentIssue: isGitBackedDevelopmentProject(project),
+    };
+  }
+
+  async function logIssueAutoRouteFailed(
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    autoRouteFailed: AutoRouteFailure,
+  ) {
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "workflow_router",
+      agentId: null,
+      runId: null,
+      action: "issue.auto_route_failed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        status: issue.status,
+        assigneeAgentId: issue.assigneeAgentId,
+        assigneeUserId: issue.assigneeUserId,
+        reason: autoRouteFailed.reason,
+        requiredRole: autoRouteFailed.requiredRole,
+      },
+    });
+  }
+
+  function resolveBoardRoutingCandidates(issue: {
+    reviewOwnerUserId: string | null;
+    createdByUserId: string | null;
+  }) {
+    const candidates = [
+      issue.reviewOwnerUserId,
+      issue.createdByUserId,
+      issue.reviewOwnerUserId === LOCAL_BOARD_USER_ID || issue.createdByUserId === LOCAL_BOARD_USER_ID
+        ? LOCAL_BOARD_USER_ID
+        : null,
+    ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    return Array.from(new Set(candidates));
+  }
+
+  function defaultQueuedDevelopmentAssigneePatch(updateFields: Partial<Parameters<typeof svc.update>[1]>, status: string) {
+    if (DEV_ROUTABLE_QUEUE_STATUSES.has(status) || status === "in_review") {
+      if (updateFields.assigneeAgentId === undefined) updateFields.assigneeAgentId = null;
+      if (updateFields.assigneeUserId === undefined) updateFields.assigneeUserId = null;
+    }
+  }
+
+  async function inspectDevelopmentIssueGitState(
+    issue: Pick<Issue, "id" | "identifier" | "projectWorkspaceId">,
+    workflow: IssueWorkflowContext,
+  ) {
+    const inspection = await gitWorkspaces.inspectIssueWorkspace({
+      issue,
+      project: workflow.project,
+      executionWorkspace: workflow.executionWorkspace,
+    }).catch((error: unknown) => {
+      throw unprocessable("Development issue workspace is not ready for git policy checks", {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier ?? null,
+        nextAction: "Ensure the issue has a git-backed execution or project workspace before handing it off.",
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    if (!inspection) {
+      throw unprocessable("Development issue workspace is not ready for git policy checks", {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier ?? null,
+        nextAction: "Ensure the issue has a git-backed execution or project workspace before handing it off.",
+      });
+    }
+
+    return inspection;
+  }
+
+  async function assertCleanDevelopmentWorkspaceBeforeExit(
+    issue: Pick<Issue, "id" | "identifier" | "projectWorkspaceId">,
+    workflow: IssueWorkflowContext,
+  ) {
+    const inspection = await inspectDevelopmentIssueGitState(issue, workflow);
+    if (inspection.hasTrackedChanges) {
+      throw conflict("Commit tracked changes before handing off this development issue", {
+        issueId: issue.id,
+        issueIdentifier: issue.identifier ?? null,
+        cwd: inspection.cwd,
+        branch: inspection.branch,
+        nextAction: "Commit your current changes, then retry the status update or release.",
+      });
+    }
+    return inspection;
+  }
+
+  async function syncGitWorkProductsForIssue(input: {
+    issue: Pick<Issue, "id" | "companyId" | "projectId" | "executionWorkspaceId">;
+    inspection: Awaited<ReturnType<typeof assertCleanDevelopmentWorkspaceBeforeExit>>;
+    runId: string | null;
+    markMerged?: boolean;
+  }) {
+    const existingProducts = await workProductsSvc.listForIssue(input.issue.id);
+
+    const upsertProduct = async (
+      type: IssueWorkProduct["type"],
+      patch: {
+        title: string;
+        status: string;
+        metadata: Record<string, unknown>;
+        summary?: string | null;
+      },
+    ) => {
+      const existing = existingProducts.find((product) => product.type === type && product.isPrimary) ??
+        existingProducts.find((product) => product.type === type) ??
+        null;
+      if (existing) {
+        return await workProductsSvc.update(existing.id, {
+          executionWorkspaceId: input.issue.executionWorkspaceId ?? existing.executionWorkspaceId,
+          title: patch.title,
+          status: patch.status,
+          summary: patch.summary ?? null,
+          metadata: patch.metadata,
+          isPrimary: true,
+          healthStatus: "healthy",
+          reviewState: input.markMerged && type === "pull_request" ? "approved" : existing.reviewState,
+        });
+      }
+
+      return await workProductsSvc.createForIssue(input.issue.id, input.issue.companyId, {
+        projectId: input.issue.projectId ?? null,
+        executionWorkspaceId: input.issue.executionWorkspaceId ?? null,
+        runtimeServiceId: null,
+        type,
+        provider: "paperclip",
+        externalId: null,
+        title: patch.title,
+        url: null,
+        status: patch.status,
+        reviewState: input.markMerged && type === "pull_request" ? "approved" : "none",
+        isPrimary: true,
+        healthStatus: "healthy",
+        summary: patch.summary ?? null,
+        metadata: patch.metadata,
+        createdByRunId: input.runId,
+      });
+    };
+
+    await upsertProduct("branch", {
+      title: input.inspection.branch,
+      status: input.markMerged ? "merged" : "active",
+      summary: input.markMerged ? "Merged and pushed by CEO." : "Latest development branch state.",
+      metadata: {
+        branch: input.inspection.branch,
+        upstream: input.inspection.upstream,
+        repoRoot: input.inspection.repoRoot,
+        cwd: input.inspection.cwd,
+        aheadCount: input.inspection.aheadCount,
+        behindCount: input.inspection.behindCount,
+        repoUrl: input.inspection.repoUrl,
+      },
+    });
+
+    await upsertProduct("commit", {
+      title: input.inspection.headSha.slice(0, 12),
+      status: input.markMerged ? "merged" : "active",
+      summary: input.markMerged ? "Latest merged commit." : "Latest committed handoff state.",
+      metadata: {
+        sha: input.inspection.headSha,
+        branch: input.inspection.branch,
+        upstream: input.inspection.upstream,
+        repoRoot: input.inspection.repoRoot,
+        cwd: input.inspection.cwd,
+        repoUrl: input.inspection.repoUrl,
+      },
+    });
+
+    if (input.markMerged) {
+      const pullRequests = existingProducts.filter((product) => product.type === "pull_request");
+      await Promise.all(pullRequests.map((product) =>
+        workProductsSvc.update(product.id, {
+          status: "merged",
+          reviewState: "approved",
+          healthStatus: "healthy",
+        })));
+    }
+  }
+
+  async function assertDevelopmentIssueUpdateAllowed(input: {
+    req: Request;
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    updateFields: Partial<Parameters<typeof svc.update>[1]>;
+    workflow: IssueWorkflowContext;
+  }) {
+    const { req, issue, updateFields } = input;
+    const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : null;
+    if (!requestedStatus) return null;
+
+    assertDevelopmentIssueStatusTransition(issue.status, requestedStatus);
+
+    const nextAssigneeAgentId =
+      updateFields.assigneeAgentId !== undefined ? updateFields.assigneeAgentId : issue.assigneeAgentId;
+    const nextAssigneeUserId =
+      updateFields.assigneeUserId !== undefined ? updateFields.assigneeUserId : issue.assigneeUserId;
+
+    if (requestedStatus === "done" && req.actor.type === "board") {
+      throw unprocessable("Board users cannot mark git-backed development issues done", {
+        nextAction: "Move the issue to merging or resolve it through the CEO merge lane.",
+      });
+    }
+
+    if (requestedStatus === "cancelled" && req.actor.type === "agent") {
+      const actorAgent = req.actor.agentId ? await agentsSvc.getById(req.actor.agentId) : null;
+      if (!actorAgent || actorAgent.role !== "ceo") {
+        throw unprocessable("Only board users or the CEO can cancel git-backed development issues", {
+          nextAction: "Return the issue to in_review if you need human intervention, or ask the board to cancel it.",
+        });
+      }
+    }
+
+    if (["todo", "testing", "rework", "merging"].includes(requestedStatus) && nextAssigneeUserId) {
+      throw unprocessable(`Status ${requestedStatus} only supports agent assignment or no assignment`, {
+        nextAction: "Clear the user assignee so Paperclip can route the issue to the correct agent role.",
+      });
+    }
+
+    if (requestedStatus === "in_review" && nextAssigneeAgentId) {
+      throw unprocessable("in_review only supports a board user assignee or no assignee", {
+        nextAction: "Clear the agent assignee so Paperclip can route the issue to the board owner.",
+      });
+    }
+
+    if (requestedStatus === "in_progress" && !nextAssigneeAgentId) {
+      throw unprocessable("git-backed development issues can only be in_progress when an agent owns them", {
+        nextAction: "Checkout the issue through an agent instead of setting in_progress manually.",
+      });
+    }
+
+    if (req.actor.type !== "agent" || !req.actor.agentId) return null;
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent) throw forbidden("Agent authentication required");
+
+    if (issue.status !== "in_progress" || issue.assigneeAgentId !== actorAgent.id) {
+      if (requestedStatus === "done" || requestedStatus === "cancelled") {
+        throw unprocessable("Only the active assignee can finish or cancel a git-backed development issue", {
+          nextAction: "Checkout the issue in the correct lane first.",
+        });
+      }
+      return actorAgent;
+    }
+
+    if (actorAgent.role === "engineer" || actorAgent.role === "devops") {
+      if (!["testing", "in_review", "blocked"].includes(requestedStatus)) {
+        throw unprocessable("Engineers and DevOps can only exit active development work to testing, in_review, or blocked", {
+          nextAction: "Hand implementation to testing, escalate to in_review, or mark it blocked.",
+        });
+      }
+      return actorAgent;
+    }
+
+    if (actorAgent.role === "qa") {
+      if (!["rework", "merging", "in_review", "blocked"].includes(requestedStatus)) {
+        throw unprocessable("QA can only exit active testing work to rework, merging, in_review, or blocked", {
+          nextAction: "Route failures to rework, passes to merging, or escalate via in_review/blocked.",
+        });
+      }
+      return actorAgent;
+    }
+
+    if (actorAgent.role === "ceo") {
+      if (issue.queuedStatusBeforeCheckout !== "merging") {
+        throw unprocessable("The CEO can only close active development work from the merging lane", {
+          nextAction: "Move the issue to merging and checkout it as CEO before trying to finish it.",
+        });
+      }
+      if (!["done", "rework", "in_review", "blocked"].includes(requestedStatus)) {
+        throw unprocessable("The CEO can only exit active merge work to done, rework, in_review, or blocked", {
+          nextAction: "Finish the merge, send it back to rework, or escalate to in_review/blocked.",
+        });
+      }
+      return actorAgent;
+    }
+
+    throw unprocessable(`Agents with role ${actorAgent.role} cannot advance git-backed development issues`, {
+      nextAction: "Reassign the issue into the correct development lane or involve the board.",
+    });
+  }
+
+  async function assertDevelopmentIssueCreateAllowed(input: {
+    req: Request;
+    project: Awaited<ReturnType<typeof projectsSvc.getById>>;
+    createFields: Parameters<typeof svc.create>[1];
+  }) {
+    if (!isGitBackedDevelopmentProject(input.project)) return;
+
+    const requestedStatus = typeof input.createFields.status === "string" ? input.createFields.status : "backlog";
+    if (!["backlog", "todo", "blocked"].includes(requestedStatus)) {
+      throw unprocessable("Git-backed development issues must be created in backlog, todo, or blocked", {
+        nextAction: "Create the issue in backlog/todo, then advance it through checkout, testing, rework, merging, and done.",
+      });
+    }
+
+    if (requestedStatus === "backlog" && input.createFields.assigneeAgentId) {
+      throw unprocessable("Backlog is a board planning lane for git-backed development issues", {
+        nextAction: "Remove the agent assignee or create the issue in todo if engineering should pick it up.",
+      });
+    }
+
+    if (requestedStatus === "todo" && input.createFields.assigneeUserId) {
+      throw unprocessable("todo only supports agent assignment or no assignment on git-backed development issues", {
+        nextAction: "Clear the user assignee so Paperclip can route or assign the issue to engineering.",
+      });
+    }
+
+    if (requestedStatus === "blocked" && input.createFields.assigneeUserId && input.createFields.assigneeAgentId) {
+      throw unprocessable("Blocked development issues can only have one assignee", {
+        nextAction: "Keep either the user assignee or the agent assignee, not both.",
+      });
+    }
+
+    if (input.req.actor.type === "board") {
+      input.createFields.reviewOwnerUserId = input.req.actor.userId;
+    }
+  }
+
+  async function maybeAutoRouteIssue(
+    issue: Awaited<ReturnType<typeof svc.getById>>,
+    workflow?: IssueWorkflowContext | null,
+  ): Promise<{
+    issue: Awaited<ReturnType<typeof svc.getById>> | null;
+    autoRouted: AutoRouteSuccess | null;
+    autoRouteFailed: AutoRouteFailure | null;
+  }> {
+    if (!issue) return { issue: null, autoRouted: null, autoRouteFailed: null };
+    if (issue.hiddenAt) return { issue, autoRouted: null, autoRouteFailed: null };
+    if (issue.assigneeAgentId || issue.assigneeUserId) {
+      return { issue, autoRouted: null, autoRouteFailed: null };
+    }
+
+    const resolvedWorkflow = workflow ?? await loadIssueWorkflowContext(issue);
 
     if (issue.status === "in_review") {
-      const reviewOwnerUserId = issue.reviewOwnerUserId ?? issue.createdByUserId ?? null;
-      if (!reviewOwnerUserId) return { issue, autoRouted: null };
-      const routedIssue = await svc.update(issue.id, {
-        assigneeAgentId: null,
-        assigneeUserId: reviewOwnerUserId,
-      });
-      return {
-        issue: routedIssue,
-        autoRouted: routedIssue
+      const candidates = resolveBoardRoutingCandidates(issue);
+      if (candidates.length === 0) {
+        return resolvedWorkflow.isDevelopmentIssue
           ? {
-              routeType: "user" as const,
+              issue,
+              autoRouted: null,
+              autoRouteFailed: {
+                status: issue.status,
+                reason: "no_canonical_board_user",
+                requiredRole: "board_user",
+              },
+            }
+          : { issue, autoRouted: null, autoRouteFailed: null };
+      }
+
+      for (const candidateUserId of candidates) {
+        try {
+          const routedIssue = await svc.update(issue.id, {
+            assigneeAgentId: null,
+            assigneeUserId: candidateUserId,
+            reviewOwnerUserId: candidateUserId,
+          });
+          if (!routedIssue) continue;
+          return {
+            issue: routedIssue,
+            autoRouted: {
+              routeType: "user",
               status: routedIssue.status,
               assigneeAgentId: null,
-              assigneeUserId: reviewOwnerUserId,
-              reason: "review_owner",
+              assigneeUserId: candidateUserId,
+              reason: candidateUserId === issue.reviewOwnerUserId ? "review_owner" : "review_owner_fallback",
+            },
+            autoRouteFailed: null,
+          };
+        } catch (error) {
+          if (!(error instanceof HttpError) || error.status !== 422) {
+            throw error;
+          }
+        }
+      }
+
+      return resolvedWorkflow.isDevelopmentIssue
+        ? {
+            issue,
+            autoRouted: null,
+            autoRouteFailed: {
+              status: issue.status,
+              reason: "no_valid_board_owner",
+              requiredRole: "board_user",
+            },
+          }
+        : { issue, autoRouted: null, autoRouteFailed: null };
+    }
+
+    if (!AGENT_ROUTABLE_STATUSES.has(issue.status)) {
+      return { issue, autoRouted: null, autoRouteFailed: null };
+    }
+
+    let selection = null;
+    let requiredRole: AutoRouteFailure["requiredRole"] = "engineer_or_devops";
+    let successReason = "deterministic_role_router";
+
+    if (issue.status === "todo") {
+      selection = await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+        roles: ["engineer", "devops"],
+      });
+      requiredRole = "engineer_or_devops";
+    } else if (issue.status === "testing") {
+      selection = await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+        roles: ["qa"],
+        preferredAgentId: issue.lastQaAgentId,
+      });
+      requiredRole = "qa";
+    } else if (issue.status === "rework") {
+      selection = await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+        roles: ["engineer", "devops"],
+        preferredAgentId: issue.lastEngineerAgentId,
+      });
+      requiredRole = "engineer_or_devops";
+    } else if (resolvedWorkflow.isDevelopmentIssue) {
+      selection = await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+        roles: ["ceo"],
+      });
+      requiredRole = "ceo";
+      successReason = "ceo_merge_router";
+    } else {
+      selection = await agentsSvc.selectDeterministicAssignee(issue.companyId, {
+        roles: ["devops", "engineer"],
+        preferredAgentId: issue.lastEngineerAgentId,
+      });
+      requiredRole = "engineer_or_devops";
+    }
+
+    let fallbackCeo = null;
+    if (!selection && !resolvedWorkflow.isDevelopmentIssue) {
+      fallbackCeo = await agentsSvc.getCompanyCeo(issue.companyId);
+    }
+    const eligibleFallbackCeo = fallbackCeo && isInvokableAgentStatus(fallbackCeo.status) ? fallbackCeo : null;
+    const targetAgentId = selection?.id ?? eligibleFallbackCeo?.id ?? null;
+    if (!targetAgentId) {
+      return {
+        issue,
+        autoRouted: null,
+        autoRouteFailed: resolvedWorkflow.isDevelopmentIssue
+          ? {
+              status: issue.status,
+              reason:
+                issue.status === "testing"
+                  ? "no_eligible_qa_agent"
+                  : issue.status === "merging"
+                    ? "no_eligible_ceo_agent"
+                    : "no_eligible_engineering_agent",
+              requiredRole,
             }
           : null,
       };
     }
-
-    if (!AGENT_ROUTABLE_STATUSES.has(issue.status)) {
-      return { issue, autoRouted: null };
-    }
-
-    const selection =
-      issue.status === "todo"
-        ? await agentsSvc.selectDeterministicAssignee(issue.companyId, {
-            roles: ["engineer", "devops"],
-          })
-        : issue.status === "testing"
-          ? await agentsSvc.selectDeterministicAssignee(issue.companyId, {
-              roles: ["qa"],
-              preferredAgentId: issue.lastQaAgentId,
-            })
-          : issue.status === "rework"
-            ? await agentsSvc.selectDeterministicAssignee(issue.companyId, {
-                roles: ["engineer", "devops"],
-                preferredAgentId: issue.lastEngineerAgentId,
-              })
-            : await agentsSvc.selectDeterministicAssignee(issue.companyId, {
-                roles: ["devops", "engineer"],
-                preferredAgentId: issue.lastEngineerAgentId,
-              });
-
-    const fallbackCeo = selection ? null : await agentsSvc.getCompanyCeo(issue.companyId);
-    const eligibleFallbackCeo = fallbackCeo && isInvokableAgentStatus(fallbackCeo.status) ? fallbackCeo : null;
-    const targetAgentId = selection?.id ?? eligibleFallbackCeo?.id ?? null;
-    if (!targetAgentId) return { issue, autoRouted: null };
 
     const routedIssue = await svc.update(issue.id, {
       assigneeAgentId: targetAgentId,
@@ -183,13 +628,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       issue: routedIssue,
       autoRouted: routedIssue
         ? {
-            routeType: "agent" as const,
+            routeType: "agent",
             status: routedIssue.status,
             assigneeAgentId: targetAgentId,
             assigneeUserId: null,
-            reason: selection ? "deterministic_role_router" : "ceo_fallback",
+            reason: selection ? successReason : "ceo_fallback",
           }
         : null,
+      autoRouteFailed: null,
     };
   }
 
@@ -271,10 +717,13 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     if (input.autoRoute) {
-      const routingResult = await maybeAutoRouteIssue(issue);
+      const routingResult = await maybeAutoRouteIssue(issue, await loadIssueWorkflowContext(issue));
       issue = routingResult.issue ?? issue;
       if (routingResult.autoRouted) {
         await logIssueAutoRouted(issue, routingResult.autoRouted);
+      }
+      if (routingResult.autoRouteFailed) {
+        await logIssueAutoRouteFailed(issue, routingResult.autoRouteFailed);
       }
     }
 
@@ -928,12 +1377,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
-    let issue = await svc.create(companyId, {
+    const project = req.body.projectId ? await projectsSvc.getById(req.body.projectId) : null;
+    const createFields = {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+    };
+    await assertDevelopmentIssueCreateAllowed({
+      req,
+      project,
+      createFields,
     });
-    const routingResult = await maybeAutoRouteIssue(issue);
+
+    let issue = await svc.create(companyId, createFields);
+    const routingResult = await maybeAutoRouteIssue(issue, await loadIssueWorkflowContext(issue));
     issue = routingResult.issue ?? issue;
 
     await logActivity(db, {
@@ -965,6 +1422,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
           reason: routingResult.autoRouted.reason,
         },
       });
+    }
+    if (routingResult.autoRouteFailed) {
+      await logIssueAutoRouteFailed(issue, routingResult.autoRouteFailed);
     }
 
     if (issue.assigneeAgentId && issue.status !== "backlog") {
@@ -1120,6 +1580,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, existing.companyId);
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
     const updateFields: Partial<Parameters<typeof svc.update>[1]> = { ...rawUpdateFields };
+    const workflow = await loadIssueWorkflowContext(existing);
+
+    if (workflow.isDevelopmentIssue && typeof updateFields.status === "string") {
+      defaultQueuedDevelopmentAssigneePatch(updateFields, updateFields.status);
+    }
+    if (
+      workflow.isDevelopmentIssue &&
+      req.actor.type === "board" &&
+      req.actor.userId &&
+      updateFields.assigneeUserId === req.actor.userId
+    ) {
+      updateFields.reviewOwnerUserId = req.actor.userId;
+    }
+
     const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : null;
 
     const assigneeWillChange =
@@ -1153,6 +1627,57 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
+
+    if (workflow.isDevelopmentIssue) {
+      await assertDevelopmentIssueUpdateAllowed({
+        req,
+        issue: existing,
+        updateFields,
+        workflow,
+      });
+    }
+
+    const agentOwnsActiveDevelopmentIssue =
+      workflow.isDevelopmentIssue &&
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      existing.status === "in_progress" &&
+      existing.assigneeAgentId === req.actor.agentId;
+
+    const agentIsExitingDevelopmentWork =
+      agentOwnsActiveDevelopmentIssue &&
+      ((requestedStatus !== null && requestedStatus !== "in_progress") ||
+        (updateFields.assigneeAgentId !== undefined && updateFields.assigneeAgentId !== req.actor.agentId) ||
+        updateFields.assigneeUserId !== undefined);
+
+    let gitInspection = null;
+    if (agentIsExitingDevelopmentWork) {
+      gitInspection = await assertCleanDevelopmentWorkspaceBeforeExit(existing, workflow);
+    }
+    if (workflow.isDevelopmentIssue && requestedStatus === "done") {
+      gitInspection = gitInspection ?? await assertCleanDevelopmentWorkspaceBeforeExit(existing, workflow);
+      if (!gitInspection.upstream) {
+        throw conflict("Push the CEO merge branch before marking this development issue done", {
+          issueId: existing.id,
+          issueIdentifier: existing.identifier ?? null,
+          cwd: gitInspection.cwd,
+          branch: gitInspection.branch,
+          nextAction: "Push the integrated branch to its tracked upstream, then retry.",
+        });
+      }
+      if (gitInspection.aheadCount > 0) {
+        throw conflict("Push committed merge work before marking this development issue done", {
+          issueId: existing.id,
+          issueIdentifier: existing.identifier ?? null,
+          cwd: gitInspection.cwd,
+          branch: gitInspection.branch,
+          upstream: gitInspection.upstream,
+          aheadCount: gitInspection.aheadCount,
+          nextAction: "git push the merge branch so no local commits remain ahead of upstream, then retry.",
+        });
+      }
+    }
+
     let issue;
     try {
       issue = await svc.update(id, updateFields);
@@ -1186,8 +1711,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     const routingResult =
       requestedStatus !== null
-        ? await maybeAutoRouteIssue(issue)
-        : { issue, autoRouted: null };
+        ? await maybeAutoRouteIssue(issue, await loadIssueWorkflowContext(issue))
+        : { issue, autoRouted: null, autoRouteFailed: null };
     issue = routingResult.issue ?? issue;
 
     // Build activity details with previous values for changed fields
@@ -1200,6 +1725,16 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const actor = getActorInfo(req);
     const hasFieldChanges = Object.keys(previous).length > 0;
+
+    if (gitInspection && agentIsExitingDevelopmentWork) {
+      await syncGitWorkProductsForIssue({
+        issue,
+        inspection: gitInspection,
+        runId: actor.runId,
+        markMerged: requestedStatus === "done",
+      });
+    }
+
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -1261,6 +1796,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
           reason: routingResult.autoRouted.reason,
         },
       });
+    }
+    if (routingResult.autoRouteFailed) {
+      await logIssueAutoRouteFailed(issue, routingResult.autoRouteFailed);
     }
 
     const assigneeChanged =
@@ -1492,6 +2030,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
+    const workflow = await loadIssueWorkflowContext(existing);
+    let gitInspection = null;
+    if (
+      workflow.isDevelopmentIssue &&
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      existing.status === "in_progress" &&
+      existing.assigneeAgentId === req.actor.agentId
+    ) {
+      gitInspection = await assertCleanDevelopmentWorkspaceBeforeExit(existing, workflow);
+    }
+
     const released = await svc.release(
       id,
       req.actor.type === "agent" ? req.actor.agentId : undefined,
@@ -1503,6 +2053,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
+    if (gitInspection) {
+      await syncGitWorkProductsForIssue({
+        issue: released,
+        inspection: gitInspection,
+        runId: actor.runId,
+      });
+    }
+
     await logActivity(db, {
       companyId: released.companyId,
       actorType: actor.actorType,
@@ -1593,7 +2151,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      const routingResult = await maybeAutoRouteIssue(reopenedIssue);
+      const routingResult = await maybeAutoRouteIssue(reopenedIssue, await loadIssueWorkflowContext(reopenedIssue));
       reopened = true;
       reopenFromStatus = issue.status;
       currentIssue = routingResult.issue ?? reopenedIssue;
@@ -1633,6 +2191,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
             reason: routingResult.autoRouted.reason,
           },
         });
+      }
+      if (routingResult.autoRouteFailed) {
+        await logIssueAutoRouteFailed(currentIssue, routingResult.autoRouteFailed);
       }
     }
 

@@ -17,6 +17,7 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { formatDate, cn, projectUrl } from "../lib/utils";
+import { getBoardStatusOptions, getDevelopmentWorkflowHint } from "../lib/issue-workflow";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -238,7 +239,7 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const currentUserId = session?.user?.id ?? session?.session?.userId;
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? "local-board";
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(companyId!),
@@ -307,6 +308,15 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
   const currentProject = issue.projectId
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
+  const currentAssigneeRole = issue.assigneeAgentId
+    ? (agents ?? []).find((agent) => agent.id === issue.assigneeAgentId)?.role ?? null
+    : null;
+  const allowedStatusOptions = getBoardStatusOptions(issue, currentProject ?? issue.project ?? null);
+  const developmentWorkflowHint = getDevelopmentWorkflowHint({
+    issue,
+    project: currentProject ?? issue.project ?? null,
+    assigneeRole: currentAssigneeRole,
+  });
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true
       ? currentProject?.executionWorkspacePolicy ?? null
@@ -640,8 +650,14 @@ export function IssueProperties({ issue, onUpdate, inline }: IssuePropertiesProp
             status={issue.status}
             onChange={(status) => onUpdate({ status })}
             showLabel
+            allowedStatuses={allowedStatusOptions}
           />
         </PropertyRow>
+        {developmentWorkflowHint && (
+          <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 py-2 text-[11px] text-muted-foreground">
+            {developmentWorkflowHint}
+          </div>
+        )}
 
         <PropertyRow label="Priority">
           <PriorityIcon

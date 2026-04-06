@@ -51,6 +51,12 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 
 const mockWorkProductService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
+  createForIssue: vi.fn(),
+  update: vi.fn(),
+}));
+
+const mockGitWorkspaceService = vi.hoisted(() => ({
+  inspectIssueWorkspace: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -95,6 +101,7 @@ vi.mock("../services/index.js", () => ({
   documentService: () => mockDocumentService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
   workProductService: () => mockWorkProductService,
+  gitWorkspaceService: () => mockGitWorkspaceService,
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   approvalService: () => mockApprovalService,
@@ -160,13 +167,114 @@ function createAgentIssueApp() {
   return app;
 }
 
+function createDevProject(projectId = "project-dev-1") {
+  return {
+    id: projectId,
+    companyId: "company-1",
+    name: "Dev Project",
+    description: "Git-backed development project",
+    status: "in_progress",
+    goalId: null,
+    goalIds: [],
+    goals: [],
+    leadAgentId: null,
+    targetDate: null,
+    color: "#000000",
+    pauseReason: null,
+    pausedAt: null,
+    executionWorkspacePolicy: null,
+    codebase: {
+      workspaceId: "workspace-dev-1",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+      defaultRef: "main",
+      repoName: "repo",
+      localFolder: "/tmp/dev-project",
+      managedFolder: "/tmp/dev-project",
+      effectiveLocalFolder: "/tmp/dev-project",
+      origin: "local_folder",
+    },
+    workspaces: [
+      {
+        id: "workspace-dev-1",
+        companyId: "company-1",
+        projectId,
+        name: "Primary Workspace",
+        sourceType: "git_repo",
+        cwd: "/tmp/dev-project",
+        repoUrl: "https://example.com/repo.git",
+        repoRef: "main",
+        defaultRef: "main",
+        visibility: "default",
+        setupCommand: null,
+        cleanupCommand: null,
+        remoteProvider: null,
+        remoteWorkspaceRef: null,
+        sharedWorkspaceKey: null,
+        metadata: null,
+        isPrimary: true,
+        runtimeServices: [],
+        createdAt: new Date("2026-03-20T12:00:00.000Z"),
+        updatedAt: new Date("2026-03-20T12:00:00.000Z"),
+      },
+    ],
+    primaryWorkspace: {
+      id: "workspace-dev-1",
+      companyId: "company-1",
+      projectId,
+      name: "Primary Workspace",
+      sourceType: "git_repo",
+      cwd: "/tmp/dev-project",
+      repoUrl: "https://example.com/repo.git",
+      repoRef: "main",
+      defaultRef: "main",
+      visibility: "default",
+      setupCommand: null,
+      cleanupCommand: null,
+      remoteProvider: null,
+      remoteWorkspaceRef: null,
+      sharedWorkspaceKey: null,
+      metadata: null,
+      isPrimary: true,
+      runtimeServices: [],
+      createdAt: new Date("2026-03-20T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-20T12:00:00.000Z"),
+    },
+    archivedAt: null,
+    createdAt: new Date("2026-03-20T12:00:00.000Z"),
+    updatedAt: new Date("2026-03-20T12:00:00.000Z"),
+    urlKey: "dev-project",
+  };
+}
+
 describe("issue dependency route behavior", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    for (const mockGroup of [
+      mockIssueService,
+      mockHeartbeatService,
+      mockProjectService,
+      mockGoalService,
+      mockDocumentService,
+      mockExecutionWorkspaceService,
+      mockWorkProductService,
+      mockGitWorkspaceService,
+      mockAccessService,
+      mockAgentService,
+      mockApprovalService,
+      mockBudgetService,
+      mockIssueApprovalService,
+      mockSecretService,
+      mockWorkspaceOperationService,
+    ]) {
+      for (const mockFn of Object.values(mockGroup)) {
+        mockFn.mockReset();
+      }
+    }
+    mockLogActivity.mockReset();
 
     mockProjectService.getById.mockResolvedValue(null);
     mockProjectService.listByIds.mockResolvedValue([]);
@@ -230,6 +338,23 @@ describe("issue dependency route behavior", () => {
     mockDocumentService.getIssueDocumentPayload.mockResolvedValue({});
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockWorkProductService.listForIssue.mockResolvedValue([]);
+    mockWorkProductService.createForIssue.mockResolvedValue(null);
+    mockWorkProductService.update.mockResolvedValue(null);
+    mockGitWorkspaceService.inspectIssueWorkspace.mockResolvedValue({
+      cwd: "/tmp/dev-project",
+      source: "project_workspace",
+      executionWorkspaceId: null,
+      projectWorkspaceId: "workspace-dev-1",
+      repoUrl: "https://example.com/repo.git",
+      branchName: "feature/pap-10",
+      repoRoot: "/tmp/dev-project",
+      branch: "feature/pap-10",
+      upstream: "origin/feature/pap-10",
+      headSha: "0123456789abcdef0123456789abcdef01234567",
+      aheadCount: 0,
+      behindCount: 0,
+      hasTrackedChanges: false,
+    });
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getCommentCursor.mockResolvedValue(null);
     mockIssueService.getComment.mockResolvedValue(null);
@@ -270,6 +395,13 @@ describe("issue dependency route behavior", () => {
     mockAgentService.getChainOfCommand.mockResolvedValue([]);
     mockAgentService.getCompanyCeo.mockResolvedValue(null);
     mockAgentService.selectDeterministicAssignee.mockResolvedValue(null);
+    mockAgentService.getById.mockResolvedValue({
+      id: "00000000-0000-4000-8000-0000000000a1",
+      companyId: "company-1",
+      role: "engineer",
+      status: "idle",
+      permissions: {},
+    });
   });
 
   it("returns blocks and blockedBy in heartbeat context", async () => {
@@ -700,10 +832,61 @@ describe("issue dependency route behavior", () => {
     expect(res.body.assigneeAgentId).toBe("eng-1");
   });
 
+  it("rejects creating git-backed development issues directly in merging", async () => {
+    const projectId = "00000000-0000-4000-8000-00000000d001";
+    mockProjectService.getById.mockResolvedValue(createDevProject(projectId));
+
+    const res = await request(createIssueApp()).post("/api/companies/company-1/issues").send({
+      title: "Skip the workflow",
+      projectId,
+      status: "merging",
+    });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("must be created in backlog, todo, or blocked");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("records the creating board user as review owner for new development issues", async () => {
+    const projectId = "00000000-0000-4000-8000-00000000d002";
+    mockProjectService.getById.mockResolvedValue(createDevProject(projectId));
+    mockIssueService.create.mockResolvedValue({
+      id: "issue-dev-create",
+      companyId: "company-1",
+      identifier: "PAP-10A",
+      title: "New development issue",
+      projectId,
+      status: "backlog",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      hiddenAt: null,
+      reviewOwnerUserId: "user-1",
+      createdByUserId: "user-1",
+      lastEngineerAgentId: null,
+      lastQaAgentId: null,
+    });
+
+    const res = await request(createIssueApp()).post("/api/companies/company-1/issues").send({
+      title: "New development issue",
+      projectId,
+      status: "backlog",
+      reviewOwnerUserId: "user-override",
+    });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        reviewOwnerUserId: "user-1",
+      }),
+    );
+  });
+
   it("auto-routes completed dev work in testing to QA", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-10",
       companyId: "company-1",
+      projectId: "project-dev-1",
       status: "in_progress",
       assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
       assigneeUserId: null,
@@ -727,6 +910,7 @@ describe("issue dependency route behavior", () => {
         lastEngineerAgentId: "eng-1",
         lastQaAgentId: "qa-1",
         hiddenAt: null,
+        projectId: "project-dev-1",
       })
       .mockResolvedValueOnce({
         id: "issue-10",
@@ -741,7 +925,9 @@ describe("issue dependency route behavior", () => {
         lastEngineerAgentId: "eng-1",
         lastQaAgentId: "qa-1",
         hiddenAt: null,
+        projectId: "project-dev-1",
       });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
     mockAgentService.selectDeterministicAssignee.mockResolvedValue({
       id: "qa-1",
       companyId: "company-1",
@@ -772,6 +958,284 @@ describe("issue dependency route behavior", () => {
       }),
     );
     expect(res.body.assigneeAgentId).toBe("qa-1");
+  });
+
+  it("rejects engineer attempts to move a development issue directly to done", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-done",
+      companyId: "company-1",
+      identifier: "PAP-201",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      queuedStatusBeforeCheckout: "todo",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-done")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({ status: "done", comment: "Finished implementation." });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("Engineers and DevOps can only exit active development work");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects handoff of a development issue when tracked git changes remain", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-dirty",
+      companyId: "company-1",
+      identifier: "PAP-202",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      queuedStatusBeforeCheckout: "todo",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+    mockGitWorkspaceService.inspectIssueWorkspace.mockResolvedValue({
+      cwd: "/tmp/dev-project",
+      source: "project_workspace",
+      executionWorkspaceId: null,
+      projectWorkspaceId: "workspace-dev-1",
+      repoUrl: "https://example.com/repo.git",
+      branchName: "feature/pap-202",
+      repoRoot: "/tmp/dev-project",
+      branch: "feature/pap-202",
+      upstream: "origin/feature/pap-202",
+      headSha: "0123456789abcdef0123456789abcdef01234567",
+      aheadCount: 0,
+      behindCount: 0,
+      hasTrackedChanges: true,
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-dirty")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Commit tracked changes before handing off this development issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("routes QA-passed development work in merging to the CEO", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-merge",
+      companyId: "company-1",
+      identifier: "PAP-203",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-1",
+      queuedStatusBeforeCheckout: "testing",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+    mockAgentService.getById.mockResolvedValue({
+      id: "00000000-0000-4000-8000-0000000000a1",
+      companyId: "company-1",
+      role: "qa",
+      status: "idle",
+      permissions: {},
+    });
+    mockIssueService.update
+      .mockResolvedValueOnce({
+        id: "issue-dev-merge",
+        companyId: "company-1",
+        identifier: "PAP-203",
+        title: "Ready to merge",
+        projectId: "project-dev-1",
+        status: "merging",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-1",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: "issue-dev-merge",
+        companyId: "company-1",
+        identifier: "PAP-203",
+        title: "Ready to merge",
+        projectId: "project-dev-1",
+        status: "merging",
+        assigneeAgentId: "ceo-1",
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-1",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      });
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue({
+      id: "ceo-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-merge")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "merging",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenCalledWith("company-1", {
+      roles: ["ceo"],
+    });
+    expect(res.body.assigneeAgentId).toBe("ceo-1");
+  });
+
+  it("keeps development issues unassigned instead of falling back to the CEO for QA", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-no-qa",
+      companyId: "company-1",
+      identifier: "PAP-204",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-missing",
+      queuedStatusBeforeCheckout: "todo",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-dev-no-qa",
+      companyId: "company-1",
+      identifier: "PAP-204",
+      title: "Needs QA",
+      projectId: "project-dev-1",
+      status: "testing",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-missing",
+      hiddenAt: null,
+    });
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue(null);
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-no-qa")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "testing",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.getCompanyCeo).not.toHaveBeenCalled();
+    expect(res.body.assigneeAgentId).toBeNull();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.auto_route_failed",
+        details: expect.objectContaining({
+          reason: "no_eligible_qa_agent",
+          requiredRole: "qa",
+        }),
+      }),
+    );
+  });
+
+  it("rejects CEO completion when merge work has not been pushed", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-unpushed",
+      companyId: "company-1",
+      identifier: "PAP-205",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      queuedStatusBeforeCheckout: "merging",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+    mockAgentService.getById.mockResolvedValue({
+      id: "00000000-0000-4000-8000-0000000000a1",
+      companyId: "company-1",
+      role: "ceo",
+      status: "idle",
+      permissions: {},
+    });
+    mockGitWorkspaceService.inspectIssueWorkspace.mockResolvedValue({
+      cwd: "/tmp/dev-project",
+      source: "project_workspace",
+      executionWorkspaceId: null,
+      projectWorkspaceId: "workspace-dev-1",
+      repoUrl: "https://example.com/repo.git",
+      branchName: "main",
+      repoRoot: "/tmp/dev-project",
+      branch: "main",
+      upstream: "origin/main",
+      headSha: "fedcba98765432100123456789abcdef01234567",
+      aheadCount: 2,
+      behindCount: 0,
+      hasTrackedChanges: false,
+    });
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-dev-unpushed")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Push committed merge work before marking this development issue done");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects board attempts to close development issues from in_review", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-review",
+      companyId: "company-1",
+      identifier: "PAP-206",
+      projectId: "project-dev-1",
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "user-1",
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+
+    const res = await request(createIssueApp())
+      .patch("/api/issues/issue-dev-review")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Invalid development issue status transition");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("auto-routes board-requested in_review work to the review owner user", async () => {

@@ -72,13 +72,26 @@ Read enough ancestor/comment context to understand _why_ the task exists and wha
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
+If you are handing active work to another lane on a git-backed development issue, you MUST commit tracked changes before PATCHing the issue. Paperclip will reject the handoff if tracked changes remain.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
-{ "status": "done", "comment": "What was done and why." }
+{ "status": "testing", "assigneeAgentId": null, "assigneeUserId": null, "comment": "Implementation complete. Ready for QA." }
+
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "status": "rework", "assigneeAgentId": null, "assigneeUserId": null, "comment": "QA found issues that need another development pass." }
+
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "status": "merging", "assigneeAgentId": null, "assigneeUserId": null, "comment": "QA passed. Ready for CEO merge and push." }
+
+PATCH /api/issues/{issueId}
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "status": "done", "comment": "Merge complete and pushed to the tracked remote." }
 
 PATCH /api/issues/{issueId}
 Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
@@ -92,15 +105,25 @@ Routine queue routing is now handled by the control plane:
 - unassigned `todo` is assigned server-side to an engineer/devops agent
 - unassigned `testing` is assigned server-side to QA
 - unassigned `rework` is assigned server-side back to an engineer/devops agent
-- unassigned `merging` is assigned server-side to devops/engineering
-- unassigned `in_review` is assigned server-side to the review owner or issue creator user
+- unassigned `merging` is assigned server-side to the CEO
+- unassigned `in_review` is assigned server-side to the canonical board user
 
 If you are the assignee agent and you have finished implementation, you may clear your own assignment when handing off workflow states:
 
 - dev handoff: set `status = testing`, `assigneeAgentId = null`, `assigneeUserId = null`
 - QA rework handoff: set `status = rework`, `assigneeAgentId = null`, `assigneeUserId = null`
+- QA pass handoff: set `status = merging`, `assigneeAgentId = null`, `assigneeUserId = null`
+- human-intervention handoff: set `status = in_review`, `assigneeAgentId = null`, `assigneeUserId = null`
 
-If you are the assignee agent and you are sending work to human review, you may assign it back to the issue creator user with `status = in_review`.
+Hard policy for git-backed development issues:
+
+- engineer/devops active work may exit only to `testing`, `in_review`, or `blocked`
+- QA active work may exit only to `rework`, `merging`, `in_review`, or `blocked`
+- CEO active merge work may exit only to `done`, `rework`, `in_review`, or `blocked`
+- engineers/devops do not mark development issues `done`
+- QA does not mark development issues `done`
+- board users do not mark development issues `done`
+- CEO `done` requires a clean workspace, a tracked upstream, and no unpushed commits
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Set `billingCode` for cross-team work.
 

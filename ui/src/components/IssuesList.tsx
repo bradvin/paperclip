@@ -4,9 +4,11 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
+import { projectsApi } from "../api/projects";
 import { queryKeys } from "../lib/queryKeys";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
+import { getBoardStatusOptions } from "../lib/issue-workflow";
 import { formatDate, cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { StatusIcon } from "./StatusIcon";
@@ -180,7 +182,12 @@ export function IssuesList({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
-  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? "local-board";
+  const { data: projects } = useQuery({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -251,6 +258,7 @@ export function IssuesList({
   });
 
   const activeFilterCount = countActiveFilters(viewState);
+  const projectById = useMemo(() => new Map((projects ?? []).map((project) => [project.id, project])), [projects]);
 
   const groupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -646,6 +654,7 @@ export function IssuesList({
                     >
                       <StatusIcon
                         status={issue.status}
+                        allowedStatuses={getBoardStatusOptions(issue, projectById.get(issue.projectId ?? ""))}
                         onChange={(s) => onUpdateIssue(issue.id, { status: s })}
                       />
                     </span>
@@ -664,6 +673,7 @@ export function IssuesList({
                       >
                         <StatusIcon
                           status={issue.status}
+                          allowedStatuses={getBoardStatusOptions(issue, projectById.get(issue.projectId ?? ""))}
                           onChange={(s) => onUpdateIssue(issue.id, { status: s })}
                         />
                       </span>

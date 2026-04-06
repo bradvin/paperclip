@@ -1,6 +1,6 @@
 # Issue Status Flow
 
-This document explains how Paperclip issue statuses work in the runtime today, including the dev-to-QA loop, deterministic control-plane routing, the human review loop, and how PR work products fit into the flow.
+This document explains the hard-policy runtime for git-backed development issues, including deterministic routing, the human intervention lane, and the CEO merge gate.
 
 ## Status Set
 
@@ -53,22 +53,21 @@ Queued or review statuses such as `todo`, `testing`, `in_review`, `rework`, and 
 
 ### `in_review`
 
-- Waiting on a human review decision.
-- Usually assigned to a board user during handoff.
-- Not an active agent execution state.
+- Exception-only human intervention lane.
+- Use this when a person must act before work can continue: missing requirements, secrets, permissions, or an operator decision.
+- When unassigned on a development issue, Paperclip routes it to the canonical board user (`reviewOwnerUserId`, with creator fallback if needed).
+- Not part of the normal happy path.
 
 ### `rework`
 
-- Human reviewed the work and requested changes.
-- The issue is no longer waiting on the human reviewer.
+- QA found problems and sent the issue back for implementation changes.
 - The next action belongs to an agent, but work has not been checked out yet.
 - Checkout moves it to `in_progress`.
 
 ### `merging`
 
-- Human approved the code path, but merge or integration work still remains.
-- Typical examples: merge conflicts, branch drift, final integration cleanup, or merge execution.
-- The next action belongs to an agent, but work has not been checked out yet.
+- QA passed and the next step is final merge/integration execution by the CEO.
+- The CEO is responsible for merging, pushing, and only then closing the issue.
 - Checkout moves it to `in_progress`.
 
 ### `blocked`
@@ -88,89 +87,76 @@ Queued or review statuses such as `todo`, `testing`, `in_review`, `rework`, and 
 
 ## Canonical Flow
 
-The normal implementation flow is:
+The hard-policy development flow is:
 
 ```text
-backlog -> todo -> in_progress -> testing -> in_review -> done
+backlog -> todo -> in_progress(dev) -> testing -> in_progress(qa) -> rework | merging
+rework -> in_progress(dev) -> testing
+merging -> in_progress(ceo) -> done
 ```
 
-Additional transitions supported by the current model:
+`in_review` is not in the happy path. It is the exception lane for human intervention.
+
+Development-specific transition constraints:
 
 ```text
-todo -> blocked | cancelled
-in_progress -> testing | blocked | done | cancelled
-testing -> in_review | rework | cancelled
-in_review -> rework | merging | done | cancelled
-rework -> in_progress | blocked | cancelled
-merging -> in_progress | blocked | done | cancelled
-blocked -> todo | testing | rework | merging | in_progress | cancelled
+testing -> rework | blocked | cancelled
+in_review -> testing | rework | merging | cancelled
+merging -> in_progress | rework | in_review | blocked | cancelled
 ```
 
-`done` and `cancelled` are terminal.
+Not allowed for git-backed development issues:
 
-## Human Review Loop
+- `testing -> in_review`
+- `in_review -> done`
+- `merging -> done` without CEO checkout
+- engineer/devops `in_progress -> done`
+- engineer/devops `in_progress -> merging`
+- QA `in_progress -> done`
+- board `-> done`
 
-After a dev agent finishes implementation, the expected flow is:
+## Human Intervention Loop
 
-1. Dev agent completes coding work.
-2. Dev moves the issue to `testing` and clears the assignment.
-3. Paperclip routes the unassigned testing issue to a QA agent.
-4. QA reviews it.
-5. If QA passes, the issue moves to `in_review`.
-6. Human reviewer decides what happens next.
+Use `in_review` only when human action is required before the workflow can continue.
 
-The QA reviewer has two main outcomes:
+Typical examples:
 
-### Outcome 1: QA passes
+- missing product decision or approval
+- secret, credential, or permission needed from a person
+- operator action required outside the repo
+- ambiguous requirements that need board clarification
 
-- Set the issue to `in_review`.
-- Optionally assign it back to the issue creator user for board pickup.
-- Agent-to-human handoff is currently implemented as a narrow creator-user return, not arbitrary reassignment to any board user.
+Board resolution paths:
 
-### Outcome 2: QA requests changes
+- send back to `rework` if implementation must resume
+- send to `testing` if QA should resume
+- send to `merging` if CEO merge work should resume
 
-- Add a comment describing the requested changes.
-- Set the issue to `rework`.
-- Clear the assignment so Paperclip can route it back to dev.
-
-After QA passes, the human reviewer has three main outcomes:
-
-### Outcome 1: Approve and finish
-
-- Set the issue to `done`.
-
-### Outcome 2: Request changes
-
-- Add a comment describing the requested changes.
-- Set the issue to `rework`.
-
-### Outcome 3: Approve but integration still remains
-
-- Add a comment describing the remaining merge or integration work.
-- Set the issue to `merging`.
+Board users do not directly mark git-backed development issues `done`.
 
 ## Deterministic Routing
 
 Paperclip now handles the routine workflow handoffs in the control plane instead of relying on CEO heartbeats.
 
-The intended flow is:
+The intended development flow is:
 
-1. Unassigned `todo` work is assigned server-side to an engineer/devops agent.
-2. Dev finishes implementation and moves the issue to `testing`, clearing the assignment.
-3. Paperclip assigns the unassigned `testing` issue server-side to QA.
-4. QA reviews it.
-5. If QA passes, the issue moves to `in_review`.
-6. Paperclip assigns `in_review` server-side to the review owner or issue creator user.
-7. If QA requests changes, QA moves the issue to `rework`, clearing the assignment.
-8. Paperclip assigns the unassigned `rework` issue server-side back to an engineer/devops agent.
+1. Unassigned `todo` routes server-side to engineer/devops.
+2. Dev finishes implementation and hands off to unassigned `testing`.
+3. Unassigned `testing` routes server-side to QA.
+4. QA either:
+   - sends failures to unassigned `rework`, which routes back to engineer/devops, or
+   - sends passes to unassigned `merging`, which routes to the CEO.
+5. CEO checks out `merging`, performs the merge/push work, and only then marks the issue `done`.
 
-`merging` is also server-routed:
+`in_review` is separately server-routed to the canonical board user.
 
-- first preference: devops or the previously working engineer
-- fallback: another engineer
-- final fallback: CEO if no eligible implementation agent exists
+For git-backed development issues there is no role-dilution fallback:
 
-The CEO still matters for exceptions, but no longer needs to spend routine heartbeats scanning for normal unassigned queue work.
+- no QA fallback to CEO
+- no merge fallback to engineer/devops
+- no in-review fallback to arbitrary users
+
+If no eligible assignee exists, the issue stays unassigned and Paperclip logs an explicit routing failure for the board.
 
 ## Agent Behavior For `testing`, `rework`, And `merging`
 
@@ -186,6 +172,22 @@ This keeps execution semantics simple:
 - `in_progress` says the work is actively running
 
 If a checked-out issue is released, Paperclip restores the remembered queued status that existed before checkout instead of flattening everything back to `todo`.
+
+## Git Policy
+
+Git-backed development issues enforce repo-state checks at handoff:
+
+- before an agent exits active work to `testing`, `rework`, `merging`, `in_review`, `blocked`, `done`, or on release, the workspace must have no tracked uncommitted changes
+- if tracked changes remain, Paperclip rejects the handoff and tells the agent to commit first
+- Paperclip records `branch` and `commit` work products from the current git state during clean handoffs
+
+CEO `done` gate:
+
+- only the CEO can close active merge work
+- the branch must be clean
+- the branch must have a tracked upstream
+- the branch must have no unpushed commits remaining
+- if a PR work product exists, completion may mark it `merged`
 
 ## Dependency Behavior
 
@@ -207,13 +209,12 @@ Relevant work product types include:
 - `branch`
 - `commit`
 
-Recommended relationship between issue status and PR state:
+Recommended relationship between issue status and work products:
 
-- issue `testing` + QA review in progress
-- issue `in_review` + PR `ready_for_review`
-- issue `rework` + PR `changes_requested`
-- issue `merging` + PR `approved`
-- issue `done` + PR `merged`
+- issue `testing` + latest branch/commit recorded for QA
+- issue `rework` + branch stays active while implementation resumes
+- issue `merging` + CEO merge lane
+- issue `done` + branch/commit recorded cleanly and PR marked `merged` when present
 
 The issue status answers:
 
