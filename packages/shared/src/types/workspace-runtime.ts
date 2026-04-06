@@ -27,7 +27,7 @@ export type ExecutionWorkspaceProviderType =
 export type ExecutionWorkspaceStatus =
   | "active"
   | "idle"
-  | "in_review"
+  | "human_review"
   | "archived"
   | "cleanup_failed";
 

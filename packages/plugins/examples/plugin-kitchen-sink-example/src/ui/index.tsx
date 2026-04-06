@@ -901,7 +901,7 @@ function KitchenSinkIssueCrudDemo({ context }: { context: PluginPageProps["conte
                       <option value="backlog">backlog</option>
                       <option value="todo">todo</option>
                       <option value="in_progress">in_progress</option>
-                      <option value="in_review">in_review</option>
+                      <option value="human_review">Human Review</option>
                       <option value="done">done</option>
                       <option value="blocked">blocked</option>
                       <option value="cancelled">cancelled</option>
@@ -1625,7 +1625,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
             onSubmit={(event) => {
               event.preventDefault();
               if (!companyId || !selectedIssueId) return;
-              void advanceIssueStatus({ companyId, issueId: selectedIssueId, status: "in_review" })
+              void advanceIssueStatus({ companyId, issueId: selectedIssueId, status: "human_review" })
                 .then((next) => {
                   setResult(next);
                   return refreshAll();
@@ -1639,7 +1639,7 @@ function KitchenSinkConsole({ context }: { context: { companyId: string | null; 
                 <option key={issue.id} value={issue.id}>{issue.title}</option>
               ))}
             </select>
-            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedIssueId}>Move to in_review</button>
+            <button type="submit" style={buttonStyle} disabled={!companyId || !selectedIssueId}>Move to Human Review</button>
           </form>
           <form
             style={layoutStack}

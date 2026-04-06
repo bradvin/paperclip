@@ -113,7 +113,7 @@ export const ISSUE_STATUSES = [
   "todo",
   "in_progress",
   "testing",
-  "in_review",
+  "human_review",
   "rework",
   "merging",
   "done",
@@ -121,6 +121,34 @@ export const ISSUE_STATUSES = [
   "cancelled",
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
+
+export const HUMAN_REVIEW_STATUS = "human_review" as const;
+export const LEGACY_HUMAN_REVIEW_STATUS = "in_review" as const;
+export const HUMAN_REVIEW_STATUS_ALIASES = [
+  HUMAN_REVIEW_STATUS,
+  LEGACY_HUMAN_REVIEW_STATUS,
+] as const;
+
+export function normalizeHumanReviewStatus<T extends string | null | undefined>(status: T): T {
+  if (status === LEGACY_HUMAN_REVIEW_STATUS) {
+    return HUMAN_REVIEW_STATUS as T;
+  }
+  return status;
+}
+
+export function expandHumanReviewStatusAliases(statuses: readonly string[]): string[] {
+  const expanded = new Set<string>();
+  for (const status of statuses) {
+    if (!status) continue;
+    if (status === HUMAN_REVIEW_STATUS || status === LEGACY_HUMAN_REVIEW_STATUS) {
+      expanded.add(HUMAN_REVIEW_STATUS);
+      expanded.add(LEGACY_HUMAN_REVIEW_STATUS);
+      continue;
+    }
+    expanded.add(status);
+  }
+  return [...expanded];
+}
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];

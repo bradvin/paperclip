@@ -587,7 +587,7 @@ describe("issue dependency route behavior", () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-5",
       companyId: "company-1",
-      status: "in_review",
+      status: "human_review",
       assigneeAgentId: null,
       assigneeUserId: "user-1",
       createdByUserId: "user-1",
@@ -745,17 +745,19 @@ describe("issue dependency route behavior", () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-8",
       companyId: "company-1",
+      projectId: "project-dev-1",
       status: "in_progress",
       assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
       assigneeUserId: null,
       createdByUserId: "user-1",
     });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
     mockIssueService.update.mockResolvedValue({
       id: "issue-8",
       companyId: "company-1",
       identifier: "PAP-8",
       title: "Ready for human review",
-      status: "in_review",
+      status: "human_review",
       assigneeAgentId: null,
       assigneeUserId: "user-1",
     });
@@ -764,21 +766,61 @@ describe("issue dependency route behavior", () => {
       .patch("/api/issues/issue-8")
       .set("X-Paperclip-Run-Id", "run-1")
       .send({
-        status: "in_review",
+        status: "human_review",
         assigneeAgentId: null,
         assigneeUserId: "user-1",
-        comment: "QA passed. Ready for human review.",
+        comment: [
+          "Human needed: Board confirmation that the new auth copy is approved for release.",
+          "Why the agent cannot continue: The code is finished, but release cannot continue without that approval.",
+          "Requested action: Review the updated auth wording and confirm it is approved.",
+          "After resolution route to: testing",
+        ].join("\n"),
       });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "issue-8",
       expect.objectContaining({
-        status: "in_review",
+        status: "human_review",
         assigneeAgentId: null,
         assigneeUserId: "user-1",
       }),
     );
+  });
+
+  it("rejects engineer human_review handoffs without a structured human-needed reason", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-8b",
+      companyId: "company-1",
+      projectId: "project-dev-1",
+      status: "in_progress",
+      assigneeAgentId: "00000000-0000-4000-8000-0000000000a1",
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+
+    const res = await request(createAgentIssueApp())
+      .patch("/api/issues/issue-8b")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "human_review",
+        assigneeAgentId: null,
+        assigneeUserId: "user-1",
+        comment: "Implementation complete. Please review my work.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("structured justification comment");
+    expect(res.body.details.nextAction).toContain("move the issue to testing");
+    expect(res.body.details.missingFields).toEqual([
+      "Human needed:",
+      "Why the agent cannot continue:",
+      "Requested action:",
+      "After resolution route to:",
+    ]);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("auto-routes new unassigned todo work to an engineer", async () => {
@@ -1214,13 +1256,13 @@ describe("issue dependency route behavior", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("rejects board attempts to close development issues from in_review", async () => {
+  it("rejects board attempts to close development issues from human_review", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-dev-review",
       companyId: "company-1",
       identifier: "PAP-206",
       projectId: "project-dev-1",
-      status: "in_review",
+      status: "human_review",
       assigneeAgentId: null,
       assigneeUserId: "user-1",
       createdByUserId: "user-1",
@@ -1238,7 +1280,7 @@ describe("issue dependency route behavior", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("auto-routes board-requested in_review work to the review owner user", async () => {
+  it("auto-routes board-requested human_review work to the review owner user", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-10b",
       companyId: "company-1",
@@ -1257,7 +1299,7 @@ describe("issue dependency route behavior", () => {
         companyId: "company-1",
         identifier: "PAP-10B",
         title: "Ready for review",
-        status: "in_review",
+        status: "human_review",
         assigneeAgentId: null,
         assigneeUserId: null,
         createdByUserId: "user-1",
@@ -1271,7 +1313,7 @@ describe("issue dependency route behavior", () => {
         companyId: "company-1",
         identifier: "PAP-10B",
         title: "Ready for review",
-        status: "in_review",
+        status: "human_review",
         assigneeAgentId: null,
         assigneeUserId: "user-2",
         createdByUserId: "user-1",
@@ -1284,7 +1326,7 @@ describe("issue dependency route behavior", () => {
     const res = await request(createIssueApp())
       .patch("/api/issues/issue-10b")
       .send({
-        status: "in_review",
+        status: "human_review",
         assigneeAgentId: null,
         assigneeUserId: null,
         comment: "QA passed. Ready for human review.",

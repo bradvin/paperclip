@@ -9,6 +9,9 @@ export {
   AGENT_ROLE_LABELS,
   AGENT_ICON_NAMES,
   ISSUE_STATUSES,
+  HUMAN_REVIEW_STATUS,
+  LEGACY_HUMAN_REVIEW_STATUS,
+  HUMAN_REVIEW_STATUS_ALIASES,
   ISSUE_PRIORITIES,
   ISSUE_RELATION_TYPES,
   GOAL_LEVELS,
@@ -118,6 +121,8 @@ export {
   type PluginWebhookDeliveryStatus,
   type PluginEventType,
   type PluginBridgeErrorCode,
+  normalizeHumanReviewStatus,
+  expandHumanReviewStatusAliases,
 } from "./constants.js";
 
 export type {

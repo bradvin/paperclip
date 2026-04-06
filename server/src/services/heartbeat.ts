@@ -4,7 +4,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import type { BillingType } from "@paperclipai/shared";
+import { expandHumanReviewStatusAliases, type BillingType } from "@paperclipai/shared";
 import { alias } from "drizzle-orm/pg-core";
 import {
   agents,
@@ -77,16 +77,16 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
-const UNRESOLVED_BLOCKER_STATUSES = [
+const UNRESOLVED_BLOCKER_STATUSES = expandHumanReviewStatusAliases([
   "backlog",
   "todo",
   "in_progress",
   "testing",
-  "in_review",
+  "human_review",
   "rework",
   "merging",
   "blocked",
-] as const;
+]);
 
 function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   const trimmed = repoUrl?.trim() ?? "";

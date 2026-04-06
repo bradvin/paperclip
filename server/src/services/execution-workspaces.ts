@@ -1,7 +1,11 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { executionWorkspaces } from "@paperclipai/db";
-import type { ExecutionWorkspace } from "@paperclipai/shared";
+import {
+  expandHumanReviewStatusAliases,
+  normalizeHumanReviewStatus,
+  type ExecutionWorkspace,
+} from "@paperclipai/shared";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
 
@@ -15,7 +19,7 @@ function toExecutionWorkspace(row: ExecutionWorkspaceRow): ExecutionWorkspace {
     mode: row.mode as ExecutionWorkspace["mode"],
     strategyType: row.strategyType as ExecutionWorkspace["strategyType"],
     name: row.name,
-    status: row.status as ExecutionWorkspace["status"],
+    status: normalizeHumanReviewStatus(row.status) as ExecutionWorkspace["status"],
     cwd: row.cwd ?? null,
     repoUrl: row.repoUrl ?? null,
     baseRef: row.baseRef ?? null,
@@ -50,12 +54,19 @@ export function executionWorkspaceService(db: Db) {
       }
       if (filters?.issueId) conditions.push(eq(executionWorkspaces.sourceIssueId, filters.issueId));
       if (filters?.status) {
-        const statuses = filters.status.split(",").map((value) => value.trim()).filter(Boolean);
+        const statuses = expandHumanReviewStatusAliases(
+          filters.status.split(",").map((value) => normalizeHumanReviewStatus(value.trim())).filter(Boolean),
+        );
         if (statuses.length === 1) conditions.push(eq(executionWorkspaces.status, statuses[0]!));
         else if (statuses.length > 1) conditions.push(inArray(executionWorkspaces.status, statuses));
       }
       if (filters?.reuseEligible) {
-        conditions.push(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]));
+        conditions.push(
+          inArray(
+            executionWorkspaces.status,
+            expandHumanReviewStatusAliases(["active", "idle", "human_review"]),
+          ),
+        );
       }
 
       const rows = await db
@@ -76,18 +87,26 @@ export function executionWorkspaceService(db: Db) {
     },
 
     create: async (data: typeof executionWorkspaces.$inferInsert) => {
+      const patch = {
+        ...data,
+        status: normalizeHumanReviewStatus(data.status),
+      };
       const row = await db
         .insert(executionWorkspaces)
-        .values(data)
+        .values(patch)
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toExecutionWorkspace(row) : null;
     },
 
     update: async (id: string, patch: Partial<typeof executionWorkspaces.$inferInsert>) => {
+      const nextPatch = {
+        ...patch,
+        status: normalizeHumanReviewStatus(patch.status),
+      };
       const row = await db
         .update(executionWorkspaces)
-        .set({ ...patch, updatedAt: new Date() })
+        .set({ ...nextPatch, updatedAt: new Date() })
         .where(eq(executionWorkspaces.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);

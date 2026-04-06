@@ -98,7 +98,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "blocked", "comment": "What is blocked, why, and who needs to unblock it." }
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `testing`, `in_review`, `rework`, `merging`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Status values: `backlog`, `todo`, `in_progress`, `testing`, `human_review`, `rework`, `merging`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 Routine queue routing is now handled by the control plane:
 
@@ -106,20 +106,31 @@ Routine queue routing is now handled by the control plane:
 - unassigned `testing` is assigned server-side to QA
 - unassigned `rework` is assigned server-side back to an engineer/devops agent
 - unassigned `merging` is assigned server-side to the CEO
-- unassigned `in_review` is assigned server-side to the canonical board user
+- unassigned `human_review` is assigned server-side to the canonical board user
 
 If you are the assignee agent and you have finished implementation, you may clear your own assignment when handing off workflow states:
 
 - dev handoff: set `status = testing`, `assigneeAgentId = null`, `assigneeUserId = null`
 - QA rework handoff: set `status = rework`, `assigneeAgentId = null`, `assigneeUserId = null`
 - QA pass handoff: set `status = merging`, `assigneeAgentId = null`, `assigneeUserId = null`
-- human-intervention handoff: set `status = in_review`, `assigneeAgentId = null`, `assigneeUserId = null`
+- human-intervention handoff: set `status = human_review`, `assigneeAgentId = null`, `assigneeUserId = null`
+
+When implementation is complete, always move the issue to `testing`. Use `human_review` only if progress requires a human decision, credential, permission, approval, or manual out-of-band action. Never use `human_review` to mean “please review my work” or “I am done.”
+
+Any agent handoff to `human_review` must include a structured justification comment with these exact lines:
+
+- `Human needed: <who/what decision, credential, approval, or action is required>`
+- `Why the agent cannot continue: <what specifically blocks further progress>`
+- `Requested action: <what the human must do next>`
+- `After resolution route to: testing | rework | merging`
+
+Server policy rejects agent `human_review` handoffs that do not include this structure.
 
 Hard policy for git-backed development issues:
 
-- engineer/devops active work may exit only to `testing`, `in_review`, or `blocked`
-- QA active work may exit only to `rework`, `merging`, `in_review`, or `blocked`
-- CEO active merge work may exit only to `done`, `rework`, `in_review`, or `blocked`
+- engineer/devops active work may exit only to `testing`, `human_review`, or `blocked`
+- QA active work may exit only to `rework`, `merging`, `human_review`, or `blocked`
+- CEO active merge work may exit only to `done`, `rework`, `human_review`, or `blocked`
 - engineers/devops do not mark development issues `done`
 - QA does not mark development issues `done`
 - board users do not mark development issues `done`
@@ -172,7 +183,7 @@ Access control:
 - **Never retry a 409.** The task belongs to someone else.
 - **Never look for unassigned work.** Routine queue routing is handled by the control plane.
 - **Self-assign only for explicit @-mention handoff.** This requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch). Otherwise, no assignments = exit.
-- **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign the issue to that user with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, and typically set status to `in_review` instead of `done`.
+- **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign the issue to that user with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, and typically set status to `human_review` instead of `done`.
   Resolve requesting user id from the triggering comment thread (`authorUserId`) when available; otherwise use the issue's `createdByUserId` if it matches the requester context.
 - **Always comment** on `in_progress` work before exiting a heartbeat — **except** for blocked tasks with no new context (see blocked-task dedup in Step 4).
 - **Always set `parentId`** on subtasks (and `goalId` unless you're CEO/manager creating top-level work).

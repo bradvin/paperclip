@@ -66,7 +66,7 @@ each belonging to one of these fixed **categories**:
 | **Triage**    | Incoming, needs review       | Triage                          |
 | **Backlog**   | Accepted, not ready for work | Backlog, Icebox                 |
 | **Unstarted** | Ready but not begun          | Todo, Ready                     |
-| **Started**   | Active work                  | In Progress, In Review, In QA   |
+| **Started**   | Active work                  | In Progress, Human Review, In QA   |
 | **Completed** | Done                         | Done, Shipped                   |
 | **Cancelled** | Rejected or abandoned        | Cancelled, Won't Fix, Duplicate |
 
@@ -74,7 +74,7 @@ each belonging to one of these fixed **categories**:
 
 - Each team defines its own workflow states within these categories
 - Teams must have at least one state per category (Triage is optional)
-- Custom states can be added within any category (e.g. "In Review" under Started)
+- Custom states can be added within any category (e.g. "Human Review" under Started)
 - Categories are fixed and ordered -- you can reorder states _within_ a category
   but not the categories themselves
 - New issues default to the team's first Backlog state
@@ -87,7 +87,7 @@ each belonging to one of these fixed **categories**:
 | Field         | Type    | Notes                                                                         |
 | ------------- | ------- | ----------------------------------------------------------------------------- |
 | `id`          | uuid    |                                                                               |
-| `name`        | string  | Display name, e.g. "In Review"                                                |
+| `name`        | string  | Display name, e.g. "Human Review"                                                |
 | `type`        | enum    | One of: `triage`, `backlog`, `unstarted`, `started`, `completed`, `cancelled` |
 | `color`       | string  | Hex color                                                                     |
 | `description` | string  | Optional guidance text                                                        |

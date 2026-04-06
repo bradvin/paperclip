@@ -21,6 +21,7 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { IssueDependencyBadges } from "./IssueDependencyBadges";
+import { formatStatusLabel } from "../lib/status";
 import type { Issue } from "@paperclipai/shared";
 
 const boardStatuses = [
@@ -28,17 +29,13 @@ const boardStatuses = [
   "todo",
   "in_progress",
   "testing",
-  "in_review",
+  "human_review",
   "rework",
   "merging",
   "blocked",
   "done",
   "cancelled",
 ];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 interface Agent {
   id: string;
@@ -72,7 +69,7 @@ function KanbanColumn({
       <div className="flex items-center gap-2 px-2 py-2 mb-1">
         <StatusIcon status={status} />
         <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {statusLabel(status)}
+          {formatStatusLabel(status)}
         </span>
         <span className="text-xs text-muted-foreground/60 ml-auto tabular-nums">
           {issues.length}

@@ -12,9 +12,9 @@ describe("issue workflow rules", () => {
     expect(canTransitionIssueStatus("backlog", "todo")).toBe(true);
     expect(canTransitionIssueStatus("todo", "in_progress")).toBe(true);
     expect(canTransitionIssueStatus("in_progress", "testing")).toBe(true);
-    expect(canTransitionIssueStatus("in_progress", "in_review")).toBe(true);
+    expect(canTransitionIssueStatus("in_progress", "human_review")).toBe(true);
     expect(canTransitionIssueStatus("testing", "rework")).toBe(true);
-    expect(canTransitionIssueStatus("in_review", "merging")).toBe(true);
+    expect(canTransitionIssueStatus("human_review", "merging")).toBe(true);
     expect(canTransitionIssueStatus("done", "todo")).toBe(true);
     expect(canTransitionIssueStatus("cancelled", "todo")).toBe(true);
   });
@@ -22,7 +22,7 @@ describe("issue workflow rules", () => {
   it("rejects unsupported workflow transitions", () => {
     expect(canTransitionIssueStatus("backlog", "done")).toBe(false);
     expect(canTransitionIssueStatus("todo", "testing")).toBe(false);
-    expect(canTransitionIssueStatus("in_review", "testing")).toBe(false);
+    expect(canTransitionIssueStatus("human_review", "testing")).toBe(false);
     expect(canTransitionIssueStatus("done", "blocked")).toBe(false);
     expect(() => assertIssueStatusTransition("todo", "testing")).toThrow(
       "Invalid issue status transition: todo -> testing",

@@ -1,6 +1,7 @@
 import { Link } from "@/lib/router";
 import { Identity } from "./Identity";
 import { timeAgo } from "../lib/timeAgo";
+import { formatStatusText } from "../lib/status";
 import { cn } from "../lib/utils";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 
@@ -58,8 +59,8 @@ function formatVerb(action: string, details?: Record<string, unknown> | null): s
     if (details.status !== undefined) {
       const from = previous.status;
       return from
-        ? `changed status from ${humanizeValue(from)} to ${humanizeValue(details.status)} on`
-        : `changed status to ${humanizeValue(details.status)} on`;
+        ? `changed status from ${formatStatusText(String(from))} to ${formatStatusText(String(details.status))} on`
+        : `changed status to ${formatStatusText(String(details.status))} on`;
     }
     if (details.priority !== undefined) {
       const from = previous.priority;

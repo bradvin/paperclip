@@ -14,6 +14,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { getBoardStatusOptions, getDevelopmentWorkflowHint } from "../lib/issue-workflow";
 import { queryKeys } from "../lib/queryKeys";
 import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
+import { formatStatusText } from "../lib/status";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
@@ -146,8 +147,8 @@ function formatAction(action: string, details?: Record<string, unknown> | null):
       const from = previous.status;
       parts.push(
         from
-          ? `changed the status from ${humanizeValue(from)} to ${humanizeValue(details.status)}`
-          : `changed the status to ${humanizeValue(details.status)}`
+          ? `changed the status from ${formatStatusText(String(from))} to ${formatStatusText(String(details.status))}`
+          : `changed the status to ${formatStatusText(String(details.status))}`
       );
     }
     if (details.priority !== undefined) {

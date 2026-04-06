@@ -41,7 +41,7 @@ Issues are the unit of work. Every issue has:
 ### Status Lifecycle
 
 ```
-backlog -> todo -> in_progress -> in_review -> done
+backlog -> todo -> in_progress -> human_review -> done
                        |
                     blocked
 ```

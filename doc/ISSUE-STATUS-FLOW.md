@@ -10,7 +10,7 @@ Paperclip issue statuses are:
 - `todo`
 - `in_progress`
 - `testing`
-- `in_review`
+- `human_review`
 - `rework`
 - `merging`
 - `blocked`
@@ -21,7 +21,7 @@ Paperclip issue statuses are:
 
 `in_progress` is the only status that means an agent currently owns active execution for the issue.
 
-Queued or review statuses such as `todo`, `testing`, `in_review`, `rework`, and `merging` describe who should act next, but they do not hold the execution lock by themselves. Agents must still checkout the issue before they begin work.
+Queued or review statuses such as `todo`, `testing`, `human_review`, `rework`, and `merging` describe who should act next, but they do not hold the execution lock by themselves. Agents must still checkout the issue before they begin work.
 
 ## Status Meanings
 
@@ -51,7 +51,7 @@ Queued or review statuses such as `todo`, `testing`, `in_review`, `rework`, and 
 - Can be left unassigned so Paperclip can route it deterministically to QA.
 - Checkout moves it to `in_progress`.
 
-### `in_review`
+### `human_review`
 
 - Exception-only human intervention lane.
 - Use this when a person must act before work can continue: missing requirements, secrets, permissions, or an operator decision.
@@ -95,20 +95,22 @@ rework -> in_progress(dev) -> testing
 merging -> in_progress(ceo) -> done
 ```
 
-`in_review` is not in the happy path. It is the exception lane for human intervention.
+`human_review` is not in the happy path. It is the exception lane for human intervention.
+
+When development implementation is complete, the default handoff is `testing`, not `human_review`.
 
 Development-specific transition constraints:
 
 ```text
 testing -> rework | blocked | cancelled
-in_review -> testing | rework | merging | cancelled
-merging -> in_progress | rework | in_review | blocked | cancelled
+human_review -> testing | rework | merging | cancelled
+merging -> in_progress | rework | human_review | blocked | cancelled
 ```
 
 Not allowed for git-backed development issues:
 
-- `testing -> in_review`
-- `in_review -> done`
+- `testing -> human_review`
+- `human_review -> done`
 - `merging -> done` without CEO checkout
 - engineer/devops `in_progress -> done`
 - engineer/devops `in_progress -> merging`
@@ -117,7 +119,7 @@ Not allowed for git-backed development issues:
 
 ## Human Intervention Loop
 
-Use `in_review` only when human action is required before the workflow can continue.
+Use `human_review` only when human action is required before the workflow can continue.
 
 Typical examples:
 
@@ -125,6 +127,15 @@ Typical examples:
 - secret, credential, or permission needed from a person
 - operator action required outside the repo
 - ambiguous requirements that need board clarification
+
+Agent handoffs to `human_review` must include a structured comment:
+
+- `Human needed: ...`
+- `Why the agent cannot continue: ...`
+- `Requested action: ...`
+- `After resolution route to: testing | rework | merging`
+
+For git-backed development issues, the server rejects agent `human_review` handoffs that do not include this structure. Engineer/devops agents should default to `testing` when implementation is complete.
 
 Board resolution paths:
 
@@ -148,7 +159,7 @@ The intended development flow is:
    - sends passes to unassigned `merging`, which routes to the CEO.
 5. CEO checks out `merging`, performs the merge/push work, and only then marks the issue `done`.
 
-`in_review` is separately server-routed to the canonical board user.
+`human_review` is separately server-routed to the canonical board user.
 
 For git-backed development issues there is no role-dilution fallback:
 
@@ -177,7 +188,7 @@ If a checked-out issue is released, Paperclip restores the remembered queued sta
 
 Git-backed development issues enforce repo-state checks at handoff:
 
-- before an agent exits active work to `testing`, `rework`, `merging`, `in_review`, `blocked`, `done`, or on release, the workspace must have no tracked uncommitted changes
+- before an agent exits active work to `testing`, `rework`, `merging`, `human_review`, `blocked`, `done`, or on release, the workspace must have no tracked uncommitted changes
 - if tracked changes remain, Paperclip rejects the handoff and tells the agent to commit first
 - Paperclip records `branch` and `commit` work products from the current git state during clean handoffs
 
@@ -233,7 +244,7 @@ Use statuses this way:
 - `todo`: ordinary queued implementation work
 - `in_progress`: active agent execution
 - `testing`: waiting on QA, usually routed by the control plane
-- `in_review`: waiting on human decision
+- `human_review`: waiting on human decision
 - `rework`: human or QA requested code changes, usually routed by the control plane
 - `merging`: human approved direction, integration still remains, usually routed by the control plane
 - `blocked`: cannot proceed because something else must unblock it

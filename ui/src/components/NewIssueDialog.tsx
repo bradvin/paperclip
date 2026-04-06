@@ -229,7 +229,7 @@ const statuses = [
   { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
   { value: "in_progress", label: "In Progress", color: issueStatusText.in_progress ?? issueStatusTextDefault },
   { value: "testing", label: "Testing", color: issueStatusText.testing ?? issueStatusTextDefault },
-  { value: "in_review", label: "In Review", color: issueStatusText.in_review ?? issueStatusTextDefault },
+  { value: "human_review", label: "Human Review", color: issueStatusText.human_review ?? issueStatusTextDefault },
   { value: "rework", label: "Rework", color: issueStatusText.rework ?? issueStatusTextDefault },
   { value: "merging", label: "Merging", color: issueStatusText.merging ?? issueStatusTextDefault },
   { value: "done", label: "Done", color: issueStatusText.done ?? issueStatusTextDefault },

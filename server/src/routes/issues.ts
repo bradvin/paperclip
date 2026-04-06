@@ -50,8 +50,15 @@ import { isGitBackedDevelopmentProject } from "../services/git-workspaces.js";
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const LOCAL_BOARD_USER_ID = "local-board";
 const DEV_ROUTABLE_QUEUE_STATUSES = new Set(["todo", "testing", "rework", "merging"]);
-const AGENT_SELF_UNASSIGNABLE_STATUSES = new Set(["testing", "rework", "merging", "in_review"]);
+const AGENT_SELF_UNASSIGNABLE_STATUSES = new Set(["testing", "rework", "merging", "human_review"]);
 const AGENT_ROUTABLE_STATUSES = new Set(["todo", "testing", "rework", "merging"]);
+const HUMAN_REVIEW_RESOLUTION_ROUTES = new Set(["testing", "rework", "merging"]);
+const HUMAN_REVIEW_COMMENT_LABELS = {
+  humanNeeded: "Human needed:",
+  whyCannotContinue: "Why the agent cannot continue:",
+  requestedAction: "Requested action:",
+  afterResolutionRoute: "After resolution route to:",
+} as const;
 
 type WorkflowProject = Awaited<ReturnType<ReturnType<typeof projectService>["getById"]>>;
 type WorkflowExecutionWorkspace = Awaited<ReturnType<ReturnType<typeof executionWorkspaceService>["getById"]>>;
@@ -75,6 +82,51 @@ type AutoRouteFailure = {
   reason: string;
   requiredRole: "engineer_or_devops" | "qa" | "ceo" | "board_user";
 };
+
+function escapeRegexLiteral(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function readStructuredCommentField(commentBody: string, label: string) {
+  const fieldPattern = new RegExp(
+    `(?:^|\\n)\\s*(?:[-*]\\s*)?${escapeRegexLiteral(label)}\\s*(.+)$`,
+    "im",
+  );
+  const value = commentBody.match(fieldPattern)?.[1]?.trim() ?? "";
+  return value.length > 0 ? value : null;
+}
+
+function validateHumanReviewComment(commentBody: string | null | undefined) {
+  if (!commentBody?.trim()) {
+    return {
+      missingFields: Object.values(HUMAN_REVIEW_COMMENT_LABELS),
+      invalidAfterResolutionRoute: null as string | null,
+    };
+  }
+
+  const humanNeeded = readStructuredCommentField(commentBody, HUMAN_REVIEW_COMMENT_LABELS.humanNeeded);
+  const whyCannotContinue = readStructuredCommentField(commentBody, HUMAN_REVIEW_COMMENT_LABELS.whyCannotContinue);
+  const requestedAction = readStructuredCommentField(commentBody, HUMAN_REVIEW_COMMENT_LABELS.requestedAction);
+  const afterResolutionRouteRaw = readStructuredCommentField(
+    commentBody,
+    HUMAN_REVIEW_COMMENT_LABELS.afterResolutionRoute,
+  );
+  const afterResolutionRoute = afterResolutionRouteRaw?.toLowerCase() ?? null;
+
+  const missingFields: string[] = [];
+  if (!humanNeeded) missingFields.push(HUMAN_REVIEW_COMMENT_LABELS.humanNeeded);
+  if (!whyCannotContinue) missingFields.push(HUMAN_REVIEW_COMMENT_LABELS.whyCannotContinue);
+  if (!requestedAction) missingFields.push(HUMAN_REVIEW_COMMENT_LABELS.requestedAction);
+  if (!afterResolutionRouteRaw) missingFields.push(HUMAN_REVIEW_COMMENT_LABELS.afterResolutionRoute);
+
+  return {
+    missingFields,
+    invalidAfterResolutionRoute:
+      afterResolutionRoute && !HUMAN_REVIEW_RESOLUTION_ROUTES.has(afterResolutionRoute)
+        ? afterResolutionRouteRaw
+        : null,
+  };
+}
 
 export function issueRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -205,7 +257,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
   }
 
   function defaultQueuedDevelopmentAssigneePatch(updateFields: Partial<Parameters<typeof svc.update>[1]>, status: string) {
-    if (DEV_ROUTABLE_QUEUE_STATUSES.has(status) || status === "in_review") {
+    if (DEV_ROUTABLE_QUEUE_STATUSES.has(status) || status === "human_review") {
       if (updateFields.assigneeAgentId === undefined) updateFields.assigneeAgentId = null;
       if (updateFields.assigneeUserId === undefined) updateFields.assigneeUserId = null;
     }
@@ -353,8 +405,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
     issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
     updateFields: Partial<Parameters<typeof svc.update>[1]>;
     workflow: IssueWorkflowContext;
+    commentBody?: string | null;
   }) {
-    const { req, issue, updateFields } = input;
+    const { req, issue, updateFields, commentBody } = input;
     const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : null;
     if (!requestedStatus) return null;
 
@@ -375,7 +428,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       const actorAgent = req.actor.agentId ? await agentsSvc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.role !== "ceo") {
         throw unprocessable("Only board users or the CEO can cancel git-backed development issues", {
-          nextAction: "Return the issue to in_review if you need human intervention, or ask the board to cancel it.",
+          nextAction: "Return the issue to human_review if you need human intervention, or ask the board to cancel it.",
         });
       }
     }
@@ -386,8 +439,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
 
-    if (requestedStatus === "in_review" && nextAssigneeAgentId) {
-      throw unprocessable("in_review only supports a board user assignee or no assignee", {
+    if (requestedStatus === "human_review" && nextAssigneeAgentId) {
+      throw unprocessable("human_review only supports a board user assignee or no assignee", {
         nextAction: "Clear the agent assignee so Paperclip can route the issue to the board owner.",
       });
     }
@@ -402,6 +455,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const actorAgent = await agentsSvc.getById(req.actor.agentId);
     if (!actorAgent) throw forbidden("Agent authentication required");
 
+    if (requestedStatus === "human_review") {
+      const justification = validateHumanReviewComment(commentBody);
+      if (justification.missingFields.length > 0 || justification.invalidAfterResolutionRoute) {
+        const prefersTesting =
+          actorAgent.role === "engineer" || actorAgent.role === "devops";
+        throw unprocessable("Agent human_review handoffs require a structured justification comment", {
+          missingFields: justification.missingFields,
+          invalidAfterResolutionRoute: justification.invalidAfterResolutionRoute,
+          requiredCommentFields: [
+            "Human needed:",
+            "Why the agent cannot continue:",
+            "Requested action:",
+            "After resolution route to: testing | rework | merging",
+          ],
+          nextAction: prefersTesting
+            ? "If implementation is complete, move the issue to testing. Use human_review only for a human-needed escalation and include the required justification lines."
+            : "Use human_review only for a human-needed escalation and include the required justification lines.",
+        });
+      }
+    }
+
     if (issue.status !== "in_progress" || issue.assigneeAgentId !== actorAgent.id) {
       if (requestedStatus === "done" || requestedStatus === "cancelled") {
         throw unprocessable("Only the active assignee can finish or cancel a git-backed development issue", {
@@ -412,18 +486,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     if (actorAgent.role === "engineer" || actorAgent.role === "devops") {
-      if (!["testing", "in_review", "blocked"].includes(requestedStatus)) {
-        throw unprocessable("Engineers and DevOps can only exit active development work to testing, in_review, or blocked", {
-          nextAction: "Hand implementation to testing, escalate to in_review, or mark it blocked.",
+      if (!["testing", "human_review", "blocked"].includes(requestedStatus)) {
+        throw unprocessable("Engineers and DevOps can only exit active development work to testing, human_review, or blocked", {
+          nextAction: "Hand implementation to testing, escalate to human_review, or mark it blocked.",
         });
       }
       return actorAgent;
     }
 
     if (actorAgent.role === "qa") {
-      if (!["rework", "merging", "in_review", "blocked"].includes(requestedStatus)) {
-        throw unprocessable("QA can only exit active testing work to rework, merging, in_review, or blocked", {
-          nextAction: "Route failures to rework, passes to merging, or escalate via in_review/blocked.",
+      if (!["rework", "merging", "human_review", "blocked"].includes(requestedStatus)) {
+        throw unprocessable("QA can only exit active testing work to rework, merging, human_review, or blocked", {
+          nextAction: "Route failures to rework, passes to merging, or escalate via human_review/blocked.",
         });
       }
       return actorAgent;
@@ -435,9 +509,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
           nextAction: "Move the issue to merging and checkout it as CEO before trying to finish it.",
         });
       }
-      if (!["done", "rework", "in_review", "blocked"].includes(requestedStatus)) {
-        throw unprocessable("The CEO can only exit active merge work to done, rework, in_review, or blocked", {
-          nextAction: "Finish the merge, send it back to rework, or escalate to in_review/blocked.",
+      if (!["done", "rework", "human_review", "blocked"].includes(requestedStatus)) {
+        throw unprocessable("The CEO can only exit active merge work to done, rework, human_review, or blocked", {
+          nextAction: "Finish the merge, send it back to rework, or escalate to human_review/blocked.",
         });
       }
       return actorAgent;
@@ -501,7 +575,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const resolvedWorkflow = workflow ?? await loadIssueWorkflowContext(issue);
 
-    if (issue.status === "in_review") {
+    if (issue.status === "human_review") {
       const candidates = resolveBoardRoutingCandidates(issue);
       if (candidates.length === 0) {
         return resolvedWorkflow.isDevelopmentIssue
@@ -1634,6 +1708,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         issue: existing,
         updateFields,
         workflow,
+        commentBody,
       });
     }
 

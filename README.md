@@ -8,7 +8,7 @@ It keeps the original company, agent, project, issue, and board model, but the w
 
 This fork adds or changes the following behavior compared to the upstream repository. The list below is meant to capture the operator-facing behavior introduced by fork-only commits; test-only changes, internal refactors, and doc-only commits are intentionally left out.
 
-- Engineering workflow states: `testing`, `in_review`, `rework`, `merging`, and `blocked` are part of the normal runtime model.
+- Engineering workflow states: `testing`, `human_review`, `rework`, `merging`, and `blocked` are part of the normal runtime model.
 - Deterministic workflow routing: normal queue handoffs are handled by the control plane instead of relying on a CEO heartbeat to notice unassigned work.
 - Dependency-aware execution: issues support first-class `blocks` and `blockedBy` relations, checkout can redirect to actionable blockers, and the UI shows dependency state.
 - Persistent workflow handoff state: when checked-out work is released, Paperclip restores the prior queued state instead of flattening everything back to `todo`.
@@ -41,7 +41,7 @@ Paperclip issue statuses in this fork are:
 - `todo`
 - `in_progress`
 - `testing`
-- `in_review`
+- `human_review`
 - `rework`
 - `merging`
 - `blocked`
@@ -56,7 +56,7 @@ Paperclip issue statuses in this fork are:
 | `todo` | ready implementation work | engineer or devops |
 | `in_progress` | actively checked out work | current assignee |
 | `testing` | implementation complete, waiting on QA | QA |
-| `in_review` | QA passed, waiting on human decision | board user / reviewer |
+| `human_review` | QA passed, waiting on human decision | board user / reviewer |
 | `rework` | QA or human review requested changes | engineer or devops |
 | `merging` | approved, but integration or merge work remains | devops or engineer |
 | `blocked` | waiting on an unblocker | depends on blocker |
@@ -66,15 +66,15 @@ Paperclip issue statuses in this fork are:
 Canonical flow:
 
 ```text
-backlog -> todo -> in_progress -> testing -> in_review -> done
+backlog -> todo -> in_progress -> testing -> human_review -> done
 ```
 
 Common alternate paths:
 
 ```text
 testing -> rework
-in_review -> rework
-in_review -> merging
+human_review -> rework
+human_review -> merging
 blocked -> todo | testing | rework | merging
 ```
 
@@ -82,7 +82,7 @@ Deterministic routing in this fork works like this:
 
 - unassigned `todo` work is assigned server-side to an implementation agent
 - unassigned `testing` work is assigned server-side to QA
-- `in_review` is routed back for human review
+- `human_review` is routed back for human review
 - unassigned `rework` is routed back to implementation
 - `merging` is routed to devops or the most relevant implementation agent
 
@@ -153,7 +153,7 @@ That command auto-onboards a local instance if needed, runs doctor checks, and s
    - optionally one devops / merge agent
 4. Keep normal implementation work in `todo` and let the server route it.
 5. Move completed implementation to `testing`, not directly to `done`.
-6. Use `in_review` for human review, `rework` for requested changes, and `merging` for approved work that still needs integration.
+6. Use `human_review` for human review, `rework` for requested changes, and `merging` for approved work that still needs integration.
 7. Model dependency chains with `blocks` and `blockedBy` instead of burying blockers in comments.
 8. Use company stop/start controls when you want to pause an entire team without manually pausing each agent.
 9. Use cost checkpoints before and after experiments, large refactors, or review cycles so you can compare spend across intervals.

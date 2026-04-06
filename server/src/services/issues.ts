@@ -22,7 +22,12 @@ import {
   projectWorkspaces,
   projects,
 } from "@paperclipai/db";
-import { extractProjectMentionIds } from "@paperclipai/shared";
+import {
+  ISSUE_STATUSES,
+  expandHumanReviewStatusAliases,
+  extractProjectMentionIds,
+  normalizeHumanReviewStatus,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import {
   defaultIssueExecutionWorkspaceSettingsForProject,
@@ -40,18 +45,7 @@ import {
   resolveReleaseStatus,
 } from "./issue-workflow.js";
 
-const ALL_ISSUE_STATUSES = [
-  "backlog",
-  "todo",
-  "in_progress",
-  "testing",
-  "in_review",
-  "rework",
-  "merging",
-  "blocked",
-  "done",
-  "cancelled",
-];
+const ALL_ISSUE_STATUSES = expandHumanReviewStatusAliases(ISSUE_STATUSES);
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 
 function escapeRegExp(value: string): string {
@@ -194,6 +188,30 @@ type IssueUserContextInput = {
   createdAt: Date | string;
   updatedAt: Date | string;
 };
+
+function normalizeIssueRow<T extends IssueRow>(row: T): T {
+  return {
+    ...row,
+    status: normalizeHumanReviewStatus(row.status),
+    queuedStatusBeforeCheckout: normalizeHumanReviewStatus(row.queuedStatusBeforeCheckout),
+  };
+}
+
+function normalizeIssueRelationSummaryRow<T extends IssueRelationSummaryRow>(row: T): T {
+  return {
+    ...row,
+    status: normalizeHumanReviewStatus(row.status),
+  };
+}
+
+function parseIssueStatusFilter(statusFilter: string): string[] {
+  return expandHumanReviewStatusAliases(
+    statusFilter
+      .split(",")
+      .map((status) => normalizeHumanReviewStatus(status.trim()))
+      .filter(Boolean),
+  );
+}
 
 function redactIssueComment<T extends { body: string }>(comment: T): T {
   return {
@@ -372,7 +390,7 @@ async function relationMapsForIssues(
     .where(inArray(issues.id, relatedIssueIds));
 
   const relatedById = new Map<string, IssueRelationSummaryRow>(
-    relatedIssues.map((row: IssueRelationSummaryRow) => [row.id, row]),
+    relatedIssues.map((row: IssueRelationSummaryRow) => [row.id, normalizeIssueRelationSummaryRow(row)]),
   );
 
   for (const row of outgoing) {
@@ -425,7 +443,7 @@ async function checkoutDependencyGraphForIssue(
       const existing = graph.get(row.id);
       graph.set(row.id, {
         id: row.id,
-        status: row.status,
+        status: normalizeHumanReviewStatus(row.status),
         assigneeAgentId: row.assigneeAgentId,
         assigneeUserId: row.assigneeUserId,
         blockedByIds: existing?.blockedByIds ?? [],
@@ -626,9 +644,10 @@ async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWith
   if (rows.length === 0) return [];
   const labelsByIssueId = await labelMapForIssues(dbOrTx, rows.map((row) => row.id));
   return rows.map((row) => {
+    const normalizedRow = normalizeIssueRow(row);
     const issueLabels = labelsByIssueId.get(row.id) ?? [];
     return {
-      ...row,
+      ...normalizedRow,
       labels: issueLabels,
       labelIds: issueLabels.map((label) => label.id),
     };
@@ -931,7 +950,7 @@ export function issueService(db: Db) {
           id: dependent.id,
           companyId: dependent.companyId,
           assigneeAgentId: dependent.assigneeAgentId,
-          status: dependent.status,
+          status: normalizeHumanReviewStatus(dependent.status),
         });
       }
     }
@@ -965,7 +984,7 @@ export function issueService(db: Db) {
         )
       `;
       if (filters?.status) {
-        const statuses = filters.status.split(",").map((s) => s.trim());
+        const statuses = parseIssueStatusFilter(filters.status);
         conditions.push(statuses.length === 1 ? eq(issues.status, statuses[0]) : inArray(issues.status, statuses));
       }
       if (filters?.assigneeAgentId) {
@@ -1084,7 +1103,7 @@ export function issueService(db: Db) {
         unreadForUserCondition(companyId, userId),
       ];
       if (status) {
-        const statuses = status.split(",").map((s) => s.trim()).filter(Boolean);
+        const statuses = parseIssueStatusFilter(status);
         if (statuses.length === 1) {
           conditions.push(eq(issues.status, statuses[0]));
         } else if (statuses.length > 1) {
@@ -1147,6 +1166,7 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & { labelIds?: string[] },
     ) => {
       const { labelIds: inputLabelIds, ...issueData } = data;
+      issueData.status = normalizeHumanReviewStatus(issueData.status);
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -1339,6 +1359,7 @@ export function issueService(db: Db) {
       if (!existing) return null;
 
       const { labelIds: nextLabelIds, ...issueData } = data;
+      issueData.status = normalizeHumanReviewStatus(issueData.status);
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;

@@ -1,4 +1,5 @@
 import type { HeartbeatRun } from "@paperclipai/shared";
+import { normalizeStatusValue } from "../lib/status";
 
 /* ---- Utilities ---- */
 
@@ -161,7 +162,7 @@ const statusColors: Record<string, string> = {
   todo: "#3b82f6",
   in_progress: "#8b5cf6",
   testing: "#06b6d4",
-  in_review: "#a855f7",
+  human_review: "#a855f7",
   rework: "#f97316",
   merging: "#14b8a6",
   done: "#10b981",
@@ -174,7 +175,7 @@ const statusLabels: Record<string, string> = {
   todo: "To Do",
   in_progress: "In Progress",
   testing: "Testing",
-  in_review: "In Review",
+  human_review: "Human Review",
   rework: "Rework",
   merging: "Merging",
   done: "Done",
@@ -189,14 +190,15 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
   const grouped = new Map<string, Record<string, number>>();
   for (const day of days) grouped.set(day, {});
   for (const issue of issues) {
+    const normalizedStatus = normalizeStatusValue(issue.status);
     const day = new Date(issue.createdAt).toISOString().slice(0, 10);
     const entry = grouped.get(day);
     if (!entry) continue;
-    entry[issue.status] = (entry[issue.status] ?? 0) + 1;
-    allStatuses.add(issue.status);
+    entry[normalizedStatus] = (entry[normalizedStatus] ?? 0) + 1;
+    allStatuses.add(normalizedStatus);
   }
 
-  const statusOrder = ["todo", "in_progress", "testing", "in_review", "rework", "merging", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
+  const statusOrder = ["todo", "in_progress", "testing", "human_review", "rework", "merging", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
   const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
   const hasData = allStatuses.size > 0;
 

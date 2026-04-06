@@ -27,7 +27,7 @@ Status colors (consistent across all entities):
 - **Backlog:** gray `hsl(220, 10%, 45%)`
 - **Todo:** gray-blue `hsl(220, 20%, 55%)`
 - **In Progress:** yellow `hsl(45, 90%, 55%)`
-- **In Review:** violet `hsl(270, 60%, 60%)`
+- **Human Review:** violet `hsl(270, 60%, 60%)`
 - **Done:** green `hsl(140, 60%, 50%)`
 - **Cancelled:** gray `hsl(220, 10%, 40%)`
 - **Blocked:** amber `hsl(25, 90%, 55%)`
@@ -254,7 +254,7 @@ The issue list is the default view when clicking "Issues" in the sidebar.
 ```
 
 **Top toolbar:**
-- **Status tabs:** `All Issues`, `Active` (todo + in_progress + in_review + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
+- **Status tabs:** `All Issues`, `Active` (todo + in_progress + human_review + blocked), `Backlog`. Each tab shows a status icon and count. Active tab is filled, others outlined.
 - **Settings gear:** Configure issue display defaults, custom fields.
 - **Filter button:** Opens a filter bar below the toolbar.
 - **Display dropdown:** Toggle between grouping modes (by status, by priority, by assignee, by project, none) and layout modes (list, board/kanban).
@@ -276,7 +276,7 @@ Each row contains, left to right:
 
 **Row interactions:**
 - Click row → navigate to issue detail view.
-- Click status circle → opens inline status dropdown (Backlog, Todo, In Progress, In Review, Done, Cancelled) with keyboard numbers as shortcuts (1-6).
+- Click status circle → opens inline status dropdown (Backlog, Todo, In Progress, Human Review, Done, Cancelled) with keyboard numbers as shortcuts (1-6).
 - Click checkbox → selects for bulk actions. When any checkbox is selected, a bulk action bar appears at the bottom of the list.
 - Hover → shows checkbox, and row gets subtle background highlight.
 - Right-click → context menu (same actions as three-dot menu).
@@ -451,7 +451,7 @@ Triggered by the sidebar pencil icon, keyboard shortcut `C`, or the `+` buttons 
 
 Accessible via Display dropdown → Board layout.
 
-Columns represent statuses: Backlog | Todo | In Progress | In Review | Done
+Columns represent statuses: Backlog | Todo | In Progress | Human Review | Done
 
 Each card shows:
 - Issue key (muted)

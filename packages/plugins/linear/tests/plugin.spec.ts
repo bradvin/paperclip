@@ -1394,7 +1394,7 @@ describe("Linear plugin", () => {
     }))).toEqual([
       { id: "state_todo", recommendedPaperclipStatus: "todo" },
       { id: "state_testing", recommendedPaperclipStatus: "testing" },
-      { id: "state_review", recommendedPaperclipStatus: "in_review" },
+      { id: "state_review", recommendedPaperclipStatus: "human_review" },
       { id: "state_rework", recommendedPaperclipStatus: "rework" },
       { id: "state_merging", recommendedPaperclipStatus: "merging" },
     ]);

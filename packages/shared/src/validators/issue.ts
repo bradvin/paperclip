@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
+import { ISSUE_PRIORITIES, ISSUE_STATUSES, normalizeHumanReviewStatus } from "../constants.js";
+
+const ISSUE_STATUS_INPUTS = [...ISSUE_STATUSES, "in_review"] as const;
+
+const issueStatusInputSchema = z
+  .enum(ISSUE_STATUS_INPUTS)
+  .transform((status) => normalizeHumanReviewStatus(status) as (typeof ISSUE_STATUSES)[number]);
 
 const executionWorkspaceStrategySchema = z
   .object({
@@ -34,7 +40,7 @@ export const createIssueSchema = z.object({
   parentId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
-  status: z.enum(ISSUE_STATUSES).optional().default("backlog"),
+  status: issueStatusInputSchema.optional().default("backlog"),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
@@ -74,7 +80,7 @@ export type IssueExecutionWorkspaceSettings = z.infer<typeof issueExecutionWorks
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().uuid(),
-  expectedStatuses: z.array(z.enum(ISSUE_STATUSES)).nonempty(),
+  expectedStatuses: z.array(issueStatusInputSchema).nonempty(),
 });
 
 export type CheckoutIssue = z.infer<typeof checkoutIssueSchema>;

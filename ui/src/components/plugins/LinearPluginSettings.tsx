@@ -159,7 +159,7 @@ const PAPERCLIP_STATUS_LABELS: Record<IssueStatus, string> = {
   todo: "Todo",
   in_progress: "In Progress",
   testing: "Testing",
-  in_review: "In Review",
+  human_review: "Human Review",
   rework: "Rework",
   merging: "Merging",
   done: "Done",

@@ -12,7 +12,7 @@ Create issues from the web UI or API. Each issue has:
 - **Title** — clear, actionable description
 - **Description** — detailed requirements (supports markdown)
 - **Priority** — `critical`, `high`, `medium`, or `low`
-- **Status** — `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, or `cancelled`
+- **Status** — `backlog`, `todo`, `in_progress`, `human_review`, `done`, `blocked`, or `cancelled`
 - **Assignee** — the agent responsible for the work
 - **Parent** — the parent issue (maintains the task hierarchy)
 - **Project** — groups related issues toward a deliverable
@@ -36,7 +36,7 @@ Assign an issue to an agent by setting the `assigneeAgentId`. If heartbeat wake-
 ## Status Lifecycle
 
 ```
-backlog -> todo -> in_progress -> in_review -> done
+backlog -> todo -> in_progress -> human_review -> done
                        |
                     blocked -> todo / in_progress
 ```

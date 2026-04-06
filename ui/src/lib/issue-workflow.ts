@@ -5,7 +5,7 @@ const ALL_STATUSES = [
   "todo",
   "in_progress",
   "testing",
-  "in_review",
+  "human_review",
   "rework",
   "merging",
   "done",
@@ -32,15 +32,15 @@ export function getBoardStatusOptions(issue: WorkflowIssue, project?: Project | 
     case "todo":
       return ["todo", "blocked", "cancelled"];
     case "in_progress":
-      return ["in_progress", "in_review", "blocked", "cancelled"];
+      return ["in_progress", "human_review", "blocked", "cancelled"];
     case "testing":
       return ["testing", "rework", "blocked", "cancelled"];
-    case "in_review":
-      return ["in_review", "testing", "rework", "merging", "cancelled"];
+    case "human_review":
+      return ["human_review", "testing", "rework", "merging", "cancelled"];
     case "rework":
       return ["rework", "blocked", "cancelled"];
     case "merging":
-      return ["merging", "rework", "in_review", "blocked", "cancelled"];
+      return ["merging", "rework", "human_review", "blocked", "cancelled"];
     case "blocked":
       return ["blocked", "todo", "testing", "rework", "merging", "cancelled"];
     case "done":
@@ -64,23 +64,23 @@ export function getDevelopmentWorkflowHint(input: {
       return "Engineering queue. Leaving this unassigned routes it to engineer/devops.";
     case "testing":
       return "QA queue. Leaving this unassigned routes it to QA. QA should send failures to rework and passes to merging.";
-    case "in_review":
-      return "Human intervention lane. Use this only when a person must act before work can continue.";
+    case "human_review":
+      return "Human intervention lane. Use this only when a person must act before work can continue, and include the required Human needed / Why the agent cannot continue / Requested action / After resolution route lines.";
     case "rework":
       return "Engineering rework queue. Leaving this unassigned routes it back to engineer/devops.";
     case "merging":
       return "CEO merge queue. Leaving this unassigned routes it to the CEO to merge and push.";
     case "blocked":
-      return "Use blocked only for non-human blockers. Human questions, secrets, or missing decisions should go to in_review.";
+      return "Use blocked only for non-human blockers. Human questions, secrets, or missing decisions should go to human_review.";
     case "in_progress":
       if (input.assigneeRole === "engineer" || input.assigneeRole === "devops") {
-        return "Active engineering work can only hand off to testing, in_review, or blocked.";
+        return "Active engineering work defaults to testing when implementation is complete. Use human_review only for true human-needed escalations with the required structured comment.";
       }
       if (input.assigneeRole === "qa") {
-        return "Active QA work can only hand off to rework, merging, in_review, or blocked.";
+        return "Active QA work can hand off to rework, merging, human_review, or blocked. Use human_review only for true human-needed escalations with the required structured comment.";
       }
       if (input.assigneeRole === "ceo") {
-        return "Active CEO merge work can only hand off to done, rework, in_review, or blocked. Done requires a clean pushed repo.";
+        return "Active CEO merge work can only hand off to done, rework, human_review, or blocked. Done requires a clean pushed repo. human_review requires the structured human-needed comment.";
       }
       return "Active development work flows through testing, rework, merging, and CEO completion.";
     default:

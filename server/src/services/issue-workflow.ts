@@ -1,3 +1,4 @@
+import { normalizeHumanReviewStatus } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
 
 export const MANUALLY_ASSIGNABLE_AGENT_STATUSES = new Set([
@@ -18,9 +19,9 @@ export const INVOKABLE_AGENT_STATUSES = new Set([
 const ISSUE_TRANSITIONS: Record<string, Set<string>> = {
   backlog: new Set(["todo", "cancelled"]),
   todo: new Set(["in_progress", "blocked", "cancelled"]),
-  in_progress: new Set(["testing", "in_review", "rework", "merging", "blocked", "done", "cancelled"]),
-  testing: new Set(["in_progress", "in_review", "rework", "blocked", "cancelled"]),
-  in_review: new Set(["rework", "merging", "done", "cancelled"]),
+  in_progress: new Set(["testing", "human_review", "rework", "merging", "blocked", "done", "cancelled"]),
+  testing: new Set(["in_progress", "human_review", "rework", "blocked", "cancelled"]),
+  human_review: new Set(["rework", "merging", "done", "cancelled"]),
   rework: new Set(["in_progress", "blocked", "cancelled"]),
   merging: new Set(["in_progress", "blocked", "done", "cancelled"]),
   blocked: new Set(["todo", "testing", "rework", "merging", "in_progress", "cancelled"]),
@@ -31,11 +32,11 @@ const ISSUE_TRANSITIONS: Record<string, Set<string>> = {
 const DEVELOPMENT_ISSUE_TRANSITIONS: Record<string, Set<string>> = {
   backlog: new Set(["todo", "cancelled"]),
   todo: new Set(["in_progress", "blocked", "cancelled"]),
-  in_progress: new Set(["testing", "in_review", "rework", "merging", "blocked", "done", "cancelled"]),
+  in_progress: new Set(["testing", "human_review", "rework", "merging", "blocked", "done", "cancelled"]),
   testing: new Set(["in_progress", "rework", "blocked", "cancelled"]),
-  in_review: new Set(["rework", "testing", "merging", "cancelled"]),
+  human_review: new Set(["rework", "testing", "merging", "cancelled"]),
   rework: new Set(["in_progress", "blocked", "cancelled"]),
-  merging: new Set(["in_progress", "rework", "in_review", "blocked", "cancelled"]),
+  merging: new Set(["in_progress", "rework", "human_review", "blocked", "cancelled"]),
   blocked: new Set(["todo", "testing", "rework", "merging", "in_progress", "cancelled"]),
   done: new Set(["todo"]),
   cancelled: new Set(["todo"]),
@@ -50,39 +51,46 @@ export function isInvokableAgentStatus(status: string | null | undefined) {
 }
 
 export function canTransitionIssueStatus(from: string, to: string) {
-  if (from === to) return true;
-  const allowedTargets = ISSUE_TRANSITIONS[from];
+  const normalizedFrom = normalizeHumanReviewStatus(from);
+  const normalizedTo = normalizeHumanReviewStatus(to);
+  if (normalizedFrom === normalizedTo) return true;
+  const allowedTargets = ISSUE_TRANSITIONS[normalizedFrom];
   if (!allowedTargets) return false;
-  return allowedTargets.has(to);
+  return allowedTargets.has(normalizedTo);
 }
 
 export function assertIssueStatusTransition(from: string, to: string) {
   if (canTransitionIssueStatus(from, to)) return;
-  throw conflict(`Invalid issue status transition: ${from} -> ${to}`);
+  throw conflict(`Invalid issue status transition: ${normalizeHumanReviewStatus(from)} -> ${normalizeHumanReviewStatus(to)}`);
 }
 
 export function canTransitionDevelopmentIssueStatus(from: string, to: string) {
-  if (from === to) return true;
-  const allowedTargets = DEVELOPMENT_ISSUE_TRANSITIONS[from];
+  const normalizedFrom = normalizeHumanReviewStatus(from);
+  const normalizedTo = normalizeHumanReviewStatus(to);
+  if (normalizedFrom === normalizedTo) return true;
+  const allowedTargets = DEVELOPMENT_ISSUE_TRANSITIONS[normalizedFrom];
   if (!allowedTargets) return false;
-  return allowedTargets.has(to);
+  return allowedTargets.has(normalizedTo);
 }
 
 export function assertDevelopmentIssueStatusTransition(from: string, to: string) {
   if (canTransitionDevelopmentIssueStatus(from, to)) return;
-  throw conflict(`Invalid development issue status transition: ${from} -> ${to}`);
+  throw conflict(
+    `Invalid development issue status transition: ${normalizeHumanReviewStatus(from)} -> ${normalizeHumanReviewStatus(to)}`,
+  );
 }
 
 export function resolveReleaseStatus(
   queuedStatusBeforeCheckout: string | null | undefined,
 ) {
+  const normalizedQueuedStatus = normalizeHumanReviewStatus(queuedStatusBeforeCheckout);
   if (
-    queuedStatusBeforeCheckout &&
-    queuedStatusBeforeCheckout !== "in_progress" &&
-    queuedStatusBeforeCheckout !== "done" &&
-    queuedStatusBeforeCheckout !== "cancelled"
+    normalizedQueuedStatus &&
+    normalizedQueuedStatus !== "in_progress" &&
+    normalizedQueuedStatus !== "done" &&
+    normalizedQueuedStatus !== "cancelled"
   ) {
-    return queuedStatusBeforeCheckout;
+    return normalizedQueuedStatus;
   }
   return "todo";
 }

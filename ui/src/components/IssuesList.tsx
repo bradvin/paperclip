@@ -9,6 +9,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { groupBy } from "../lib/groupBy";
 import { getBoardStatusOptions } from "../lib/issue-workflow";
+import { formatStatusLabel, normalizeStatusValue } from "../lib/status";
 import { formatDate, cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { StatusIcon } from "./StatusIcon";
@@ -28,12 +29,8 @@ import type { Issue } from "@paperclipai/shared";
 
 /* ── Helpers ── */
 
-const statusOrder = ["in_progress", "testing", "rework", "merging", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
+const statusOrder = ["in_progress", "testing", "rework", "merging", "todo", "backlog", "human_review", "blocked", "done", "cancelled"];
 const priorityOrder = ["critical", "high", "medium", "low"];
-
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 /* ── View state ── */
 
@@ -63,7 +60,7 @@ const defaultViewState: IssueViewState = {
 
 const quickFilterPresets = [
   { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "testing", "in_review", "rework", "merging", "blocked"] },
+  { label: "Active", statuses: ["todo", "in_progress", "testing", "human_review", "rework", "merging", "blocked"] },
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];
@@ -71,7 +68,14 @@ const quickFilterPresets = [
 function getViewState(key: string): IssueViewState {
   try {
     const raw = localStorage.getItem(key);
-    if (raw) return { ...defaultViewState, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = { ...defaultViewState, ...JSON.parse(raw) } as IssueViewState;
+      return {
+        ...parsed,
+        statuses: parsed.statuses.map(normalizeStatusValue),
+        collapsedGroups: parsed.collapsedGroups.map(normalizeStatusValue),
+      };
+    }
   } catch { /* ignore */ }
   return { ...defaultViewState };
 }
@@ -268,13 +272,13 @@ export function IssuesList({
       const groups = groupBy(filtered, (i) => i.status);
       return statusOrder
         .filter((s) => groups[s]?.length)
-        .map((s) => ({ key: s, label: statusLabel(s), items: groups[s]! }));
+        .map((s) => ({ key: s, label: formatStatusLabel(s), items: groups[s]! }));
     }
     if (viewState.groupBy === "priority") {
       const groups = groupBy(filtered, (i) => i.priority);
       return priorityOrder
         .filter((p) => groups[p]?.length)
-        .map((p) => ({ key: p, label: statusLabel(p), items: groups[p]! }));
+        .map((p) => ({ key: p, label: formatStatusLabel(p), items: groups[p]! }));
     }
     // assignee
     const groups = groupBy(
@@ -428,7 +432,7 @@ export function IssuesList({
                             onCheckedChange={() => updateView({ statuses: toggleInArray(viewState.statuses, s) })}
                           />
                           <StatusIcon status={s} />
-                          <span className="text-sm">{statusLabel(s)}</span>
+                          <span className="text-sm">{formatStatusLabel(s)}</span>
                         </label>
                       ))}
                     </div>
@@ -447,7 +451,7 @@ export function IssuesList({
                               onCheckedChange={() => updateView({ priorities: toggleInArray(viewState.priorities, p) })}
                             />
                             <PriorityIcon priority={p} />
-                            <span className="text-sm">{statusLabel(p)}</span>
+                            <span className="text-sm">{formatStatusLabel(p)}</span>
                           </label>
                         ))}
                       </div>
