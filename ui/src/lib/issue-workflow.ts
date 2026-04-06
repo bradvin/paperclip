@@ -34,7 +34,7 @@ export function getBoardStatusOptions(issue: WorkflowIssue, project?: Project | 
     case "in_progress":
       return ["in_progress", "human_review", "blocked", "cancelled"];
     case "testing":
-      return ["testing", "rework", "blocked", "cancelled"];
+      return ["testing", "rework", "merging", "blocked", "cancelled"];
     case "human_review":
       return ["human_review", "testing", "rework", "merging", "cancelled"];
     case "rework":
@@ -63,7 +63,7 @@ export function getDevelopmentWorkflowHint(input: {
     case "todo":
       return "Engineering queue. Leaving this unassigned routes it to engineer/devops.";
     case "testing":
-      return "QA queue. Leaving this unassigned routes it to QA. QA should send failures to rework and passes to merging.";
+      return "QA queue. Leaving this unassigned routes it to QA. Issues in testing can also be moved directly to merging to route them to the CEO.";
     case "human_review":
       return "Human intervention lane. Use this only when a person must act before work can continue, and include the required Human needed / Why the agent cannot continue / Requested action / After resolution route lines.";
     case "rework":

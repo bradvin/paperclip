@@ -1150,6 +1150,74 @@ describe("issue dependency route behavior", () => {
     expect(res.body.assigneeAgentId).toBe("ceo-1");
   });
 
+  it("auto-routes development issues moved from testing to merging to the CEO", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-dev-testing-merge",
+      companyId: "company-1",
+      identifier: "PAP-203B",
+      projectId: "project-dev-1",
+      status: "testing",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "user-1",
+      reviewOwnerUserId: "user-1",
+      lastEngineerAgentId: "eng-1",
+      lastQaAgentId: "qa-1",
+      hiddenAt: null,
+    });
+    mockProjectService.getById.mockResolvedValue(createDevProject("project-dev-1"));
+    mockIssueService.update
+      .mockResolvedValueOnce({
+        id: "issue-dev-testing-merge",
+        companyId: "company-1",
+        identifier: "PAP-203B",
+        title: "Ready to merge",
+        projectId: "project-dev-1",
+        status: "merging",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-1",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      })
+      .mockResolvedValueOnce({
+        id: "issue-dev-testing-merge",
+        companyId: "company-1",
+        identifier: "PAP-203B",
+        title: "Ready to merge",
+        projectId: "project-dev-1",
+        status: "merging",
+        assigneeAgentId: "ceo-1",
+        assigneeUserId: null,
+        createdByUserId: "user-1",
+        reviewOwnerUserId: "user-1",
+        lastEngineerAgentId: "eng-1",
+        lastQaAgentId: "qa-1",
+        hiddenAt: null,
+      });
+    mockAgentService.selectDeterministicAssignee.mockResolvedValue({
+      id: "ceo-1",
+      companyId: "company-1",
+      role: "ceo",
+    });
+
+    const res = await request(createIssueApp())
+      .patch("/api/issues/issue-dev-testing-merge")
+      .send({
+        status: "merging",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockAgentService.selectDeterministicAssignee).toHaveBeenCalledWith("company-1", {
+      roles: ["ceo"],
+    });
+    expect(res.body.assigneeAgentId).toBe("ceo-1");
+  });
+
   it("keeps development issues unassigned instead of falling back to the CEO for QA", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "issue-dev-no-qa",

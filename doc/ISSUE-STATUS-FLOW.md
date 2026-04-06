@@ -102,7 +102,7 @@ When development implementation is complete, the default handoff is `testing`, n
 Development-specific transition constraints:
 
 ```text
-testing -> rework | blocked | cancelled
+testing -> rework | merging | blocked | cancelled
 human_review -> testing | rework | merging | cancelled
 merging -> in_progress | rework | human_review | blocked | cancelled
 ```

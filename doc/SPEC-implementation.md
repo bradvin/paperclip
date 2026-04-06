@@ -404,7 +404,7 @@ Allowed transitions:
 - `backlog -> todo | cancelled`
 - `todo -> in_progress | blocked | cancelled`
 - `in_progress -> testing | blocked | done | cancelled`
-- `testing -> human_review | rework | cancelled`
+- `testing -> human_review | rework | merging | cancelled`
 - `human_review -> rework | merging | done | cancelled`
 - `rework -> in_progress | blocked | cancelled`
 - `merging -> in_progress | blocked | done | cancelled`
