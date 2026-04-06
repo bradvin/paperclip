@@ -80,6 +80,28 @@ export function assertDevelopmentIssueStatusTransition(from: string, to: string)
   );
 }
 
+export function canTransitionWorkflowScopedIssueStatus(
+  from: string,
+  to: string,
+  options?: { isDevelopmentIssue?: boolean | null },
+) {
+  return options?.isDevelopmentIssue
+    ? canTransitionDevelopmentIssueStatus(from, to)
+    : canTransitionIssueStatus(from, to);
+}
+
+export function assertWorkflowScopedIssueStatusTransition(
+  from: string,
+  to: string,
+  options?: { isDevelopmentIssue?: boolean | null },
+) {
+  if (options?.isDevelopmentIssue) {
+    assertDevelopmentIssueStatusTransition(from, to);
+    return;
+  }
+  assertIssueStatusTransition(from, to);
+}
+
 export function resolveReleaseStatus(
   queuedStatusBeforeCheckout: string | null | undefined,
 ) {

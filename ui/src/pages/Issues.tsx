@@ -6,6 +6,8 @@ import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useToast } from "../context/ToastContext";
+import { formatApiErrorMessage } from "../lib/apiErrors";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
@@ -15,6 +17,7 @@ import { CircleDot } from "lucide-react";
 export function Issues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToast();
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -89,6 +92,13 @@ export function Issues() {
       issuesApi.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update issue",
+        body: formatApiErrorMessage(err),
+        tone: "error",
+      });
     },
   });
 

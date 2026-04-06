@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertDevelopmentIssueStatusTransition,
   assertIssueStatusTransition,
+  assertWorkflowScopedIssueStatusTransition,
+  canTransitionDevelopmentIssueStatus,
   canTransitionIssueStatus,
+  canTransitionWorkflowScopedIssueStatus,
   isAssignableAgentStatus,
   isInvokableAgentStatus,
   resolveReleaseStatus,
@@ -26,6 +30,33 @@ describe("issue workflow rules", () => {
     expect(canTransitionIssueStatus("done", "blocked")).toBe(false);
     expect(() => assertIssueStatusTransition("todo", "testing")).toThrow(
       "Invalid issue status transition: todo -> testing",
+    );
+  });
+
+  it("accepts supported development workflow transitions", () => {
+    expect(canTransitionDevelopmentIssueStatus("human_review", "testing")).toBe(true);
+    expect(canTransitionDevelopmentIssueStatus("human_review", "merging")).toBe(true);
+    expect(canTransitionDevelopmentIssueStatus("merging", "human_review")).toBe(true);
+    expect(() => assertDevelopmentIssueStatusTransition("human_review", "testing")).not.toThrow();
+  });
+
+  it("rejects unsupported development workflow transitions", () => {
+    expect(canTransitionDevelopmentIssueStatus("testing", "human_review")).toBe(false);
+    expect(canTransitionDevelopmentIssueStatus("human_review", "done")).toBe(false);
+    expect(canTransitionDevelopmentIssueStatus("merging", "done")).toBe(false);
+    expect(() => assertDevelopmentIssueStatusTransition("human_review", "done")).toThrow(
+      "Invalid development issue status transition: human_review -> done",
+    );
+  });
+
+  it("chooses the correct transition rules for the workflow context", () => {
+    expect(canTransitionWorkflowScopedIssueStatus("human_review", "testing")).toBe(false);
+    expect(canTransitionWorkflowScopedIssueStatus("human_review", "testing", { isDevelopmentIssue: true })).toBe(true);
+    expect(() =>
+      assertWorkflowScopedIssueStatusTransition("human_review", "testing", { isDevelopmentIssue: true }),
+    ).not.toThrow();
+    expect(() => assertWorkflowScopedIssueStatusTransition("human_review", "testing")).toThrow(
+      "Invalid issue status transition: human_review -> testing",
     );
   });
 

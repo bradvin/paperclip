@@ -47,7 +47,7 @@ function AnimatedToast({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold leading-5">{toast.title}</p>
           {toast.body && (
-            <p className="mt-1 text-xs leading-4 opacity-70">
+            <p className="mt-1 whitespace-pre-wrap text-xs leading-4 opacity-70">
               {toast.body}
             </p>
           )}

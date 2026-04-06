@@ -11,6 +11,7 @@ import { useCompany } from "../context/CompanyContext";
 import { usePanel } from "../context/PanelContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { formatApiErrorMessage } from "../lib/apiErrors";
 import { getBoardStatusOptions, getDevelopmentWorkflowHint } from "../lib/issue-workflow";
 import { queryKeys } from "../lib/queryKeys";
 import { readIssueDetailBreadcrumb } from "../lib/issueDetailBreadcrumb";
@@ -496,6 +497,13 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssue();
     },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update issue",
+        body: formatApiErrorMessage(err),
+        tone: "error",
+      });
+    },
   });
 
   const deleteIssue = useMutation({
@@ -524,7 +532,7 @@ export function IssueDetail() {
     onError: (err) => {
       pushToast({
         title: "Failed to delete issue",
-        body: err instanceof Error ? err.message : "Unknown error",
+        body: formatApiErrorMessage(err),
         tone: "error",
       });
     },

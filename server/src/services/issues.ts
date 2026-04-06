@@ -39,7 +39,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import {
-  assertIssueStatusTransition,
+  assertWorkflowScopedIssueStatusTransition,
   isAssignableAgentStatus,
   isInvokableAgentStatus,
   resolveReleaseStatus,
@@ -717,6 +717,17 @@ function withActiveRuns(
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
 
+  async function isGitBackedDevelopmentIssueProject(projectId: string | null | undefined) {
+    if (!projectId) return false;
+    const workspace = await db
+      .select({ sourceType: projectWorkspaces.sourceType })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.projectId, projectId))
+      .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+      .then((rows) => rows[0] ?? null);
+    return workspace?.sourceType === "git_repo";
+  }
+
   async function getAssigneeAgent(companyId: string, agentId: string) {
     const assignee = await db
       .select({
@@ -1350,7 +1361,11 @@ export function issueService(db: Db) {
       return relation ?? null;
     },
 
-    update: async (id: string, data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] }) => {
+    update: async (
+      id: string,
+      data: Partial<typeof issues.$inferInsert> & { labelIds?: string[] },
+      options?: { isDevelopmentIssue?: boolean | null },
+    ) => {
       const existing = await db
         .select()
         .from(issues)
@@ -1367,11 +1382,14 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspaceSettings;
       }
 
+      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
+
       if (issueData.status) {
         if (!ALL_ISSUE_STATUSES.includes(issueData.status)) {
           throw conflict(`Unknown issue status: ${issueData.status}`);
         }
-        assertIssueStatusTransition(existing.status, issueData.status);
+        const isDevelopmentIssue = options?.isDevelopmentIssue ?? await isGitBackedDevelopmentIssueProject(nextProjectId);
+        assertWorkflowScopedIssueStatusTransition(existing.status, issueData.status, { isDevelopmentIssue });
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -1401,7 +1419,6 @@ export function issueService(db: Db) {
       if (issueData.reviewOwnerUserId) {
         await assertAssignableUser(existing.companyId, issueData.reviewOwnerUserId);
       }
-      const nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       const nextProjectWorkspaceId =
         issueData.projectWorkspaceId !== undefined ? issueData.projectWorkspaceId : existing.projectWorkspaceId;
       const nextExecutionWorkspaceId =
