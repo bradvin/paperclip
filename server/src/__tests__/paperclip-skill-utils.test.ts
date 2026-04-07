@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  ensurePaperclipSkillSymlink,
+  isLikelyPaperclipSkillSource,
   listPaperclipSkillEntries,
   removeMaintainerOnlySkillSymlinks,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -57,5 +59,40 @@ describe("paperclip skill utils", () => {
     await expect(fs.lstat(path.join(skillsHome, "release"))).rejects.toThrow();
     expect((await fs.lstat(path.join(skillsHome, "paperclip"))).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(path.join(skillsHome, "release-notes"))).isSymbolicLink()).toBe(true);
+  });
+
+  it("recognizes Paperclip skills shipped from an adapter package", async () => {
+    const root = await makeTempDir("paperclip-skill-package-");
+    cleanupDirs.add(root);
+
+    const packageRoot = path.join(root, "node_modules", "@paperclipai", "adapter-codex-local");
+    const skillDir = path.join(packageRoot, "skills", "paperclip");
+
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"@paperclipai/adapter-codex-local"}\n', "utf8");
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: paperclip\n---\n", "utf8");
+
+    await expect(isLikelyPaperclipSkillSource(skillDir, "paperclip")).resolves.toBe(true);
+  });
+
+  it("repairs a symlink that still points at a live adapter package skill", async () => {
+    const root = await makeTempDir("paperclip-skill-repair-");
+    cleanupDirs.add(root);
+
+    const currentSkill = path.join(root, "repo", "skills", "paperclip");
+    const oldPackageRoot = path.join(root, "cache", "node_modules", "@paperclipai", "adapter-codex-local");
+    const oldSkill = path.join(oldPackageRoot, "skills", "paperclip");
+    const target = path.join(root, "skills-home", "paperclip");
+
+    await fs.mkdir(currentSkill, { recursive: true });
+    await fs.mkdir(oldSkill, { recursive: true });
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(path.join(currentSkill, "SKILL.md"), "---\nname: paperclip\n---\n", "utf8");
+    await fs.writeFile(path.join(oldPackageRoot, "package.json"), '{"name":"@paperclipai/adapter-codex-local"}\n', "utf8");
+    await fs.writeFile(path.join(oldSkill, "SKILL.md"), "---\nname: paperclip\n---\n", "utf8");
+    await fs.symlink(oldSkill, target);
+
+    await expect(ensurePaperclipSkillSymlink(currentSkill, target)).resolves.toBe("repaired");
+    await expect(fs.realpath(target)).resolves.toBe(await fs.realpath(currentSkill));
   });
 });

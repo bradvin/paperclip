@@ -32,6 +32,7 @@ export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
+const PAPERCLIP_ADAPTER_PACKAGE_RE = /^@paperclipai\/adapter-[a-z0-9-]+$/i;
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -164,6 +165,15 @@ function windowsPathExts(env: NodeJS.ProcessEnv): string[] {
 async function pathExists(candidate: string) {
   try {
     await fs.access(candidate, process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function entryExists(candidate: string) {
+  try {
+    await fs.access(candidate, fsConstants.F_OK);
     return true;
   } catch {
     return false;
@@ -330,6 +340,52 @@ export async function readPaperclipSkillMarkdown(
   }
 }
 
+async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
+  const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
+    entryExists(path.join(candidate, "pnpm-workspace.yaml")),
+    entryExists(path.join(candidate, "package.json")),
+    entryExists(path.join(candidate, "server")),
+    entryExists(path.join(candidate, "packages", "adapter-utils")),
+  ]);
+
+  return hasWorkspace && hasPackageJson && hasServerDir && hasAdapterUtilsDir;
+}
+
+async function isLikelyPaperclipAdapterPackageRoot(candidate: string): Promise<boolean> {
+  const packageJsonPath = path.join(candidate, "package.json");
+  const raw = await fs.readFile(packageJsonPath, "utf8").catch(() => null);
+  if (!raw) return false;
+
+  try {
+    const parsed = JSON.parse(raw) as { name?: string };
+    return typeof parsed.name === "string" && PAPERCLIP_ADAPTER_PACKAGE_RE.test(parsed.name);
+  } catch {
+    return false;
+  }
+}
+
+export async function isLikelyPaperclipSkillSource(
+  candidate: string,
+  skillName: string = path.basename(candidate),
+): Promise<boolean> {
+  if (path.basename(candidate) !== skillName) return false;
+
+  const skillsRoot = path.dirname(candidate);
+  if (path.basename(skillsRoot) !== "skills") return false;
+  if (!(await entryExists(path.join(candidate, "SKILL.md")))) return false;
+
+  let cursor = path.dirname(skillsRoot);
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (await isLikelyPaperclipRepoRoot(cursor)) return true;
+    if (await isLikelyPaperclipAdapterPackageRoot(cursor)) return true;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+
+  return false;
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
@@ -355,7 +411,7 @@ export async function ensurePaperclipSkillSymlink(
   }
 
   const linkedPathExists = await fs.stat(resolvedLinkedPath).then(() => true).catch(() => false);
-  if (linkedPathExists) {
+  if (linkedPathExists && !(await isLikelyPaperclipSkillSource(resolvedLinkedPath, path.basename(source)))) {
     return "skipped";
   }
 

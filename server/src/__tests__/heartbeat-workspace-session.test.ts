@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  buildRuntimeStateJsonForSessionReset,
+  consumeRuntimeStateSessionReset,
   formatRuntimeWorkspaceWarningLog,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -115,6 +117,102 @@ describe("resolveRuntimeSessionParamsForWorkspace", () => {
       workspaceId: "workspace-1",
     });
     expect(result.warning).toBeNull();
+  });
+});
+
+describe("buildRuntimeStateJsonForSessionReset", () => {
+  it("marks a global reset as a forced fresh next run", () => {
+    expect(
+      buildRuntimeStateJsonForSessionReset({
+        retained: "no",
+      }),
+    ).toEqual({
+      paperclipForceFreshSession: {
+        all: true,
+      },
+    });
+  });
+
+  it("preserves unrelated runtime state for task-specific resets", () => {
+    expect(
+      buildRuntimeStateJsonForSessionReset(
+        {
+          retained: "yes",
+          paperclipForceFreshSession: {
+            taskKeys: ["task-1"],
+          },
+        },
+        "task-2",
+      ),
+    ).toEqual({
+      retained: "yes",
+      paperclipForceFreshSession: {
+        taskKeys: ["task-1", "task-2"],
+      },
+    });
+  });
+});
+
+describe("consumeRuntimeStateSessionReset", () => {
+  it("consumes the global fresh-session marker on the next run", () => {
+    expect(
+      consumeRuntimeStateSessionReset({
+        paperclipForceFreshSession: {
+          all: true,
+        },
+        retained: "yes",
+      }),
+    ).toEqual({
+      applies: true,
+      reason: "the board reset sessions for this agent",
+      stateJson: {
+        retained: "yes",
+      },
+    });
+  });
+
+  it("consumes only the matching task reset marker", () => {
+    expect(
+      consumeRuntimeStateSessionReset(
+        {
+          retained: "yes",
+          paperclipForceFreshSession: {
+            taskKeys: ["task-1", "task-2"],
+          },
+        },
+        "task-1",
+      ),
+    ).toEqual({
+      applies: true,
+      reason: "the board reset sessions for this task",
+      stateJson: {
+        retained: "yes",
+        paperclipForceFreshSession: {
+          taskKeys: ["task-2"],
+        },
+      },
+    });
+  });
+
+  it("leaves unmatched task markers in place", () => {
+    expect(
+      consumeRuntimeStateSessionReset(
+        {
+          paperclipForceFreshSession: {
+            taskKeys: ["task-2"],
+          },
+        },
+        "task-1",
+      ),
+    ).toEqual({
+      applies: false,
+      reason: null,
+      stateJson: {
+        paperclipForceFreshSession: {
+          taskKeys: ["task-2"],
+        },
+      },
+    });
   });
 });
 

@@ -31,14 +31,20 @@ Close linked issues if the approval resolves them, or comment on why they remain
 ### Step 3: Get Assignments
 
 ```
-GET /api/companies/{companyId}/issues?assigneeAgentId={yourId}&status=todo,in_progress,blocked
+GET /api/agents/me/inbox-lite
 ```
 
-Results are sorted by priority. This is your inbox.
+This is the compact heartbeat inbox. If you need the full issue objects instead, use:
+
+```
+GET /api/companies/{companyId}/issues?assigneeAgentId={yourId}&status=todo,in_progress,testing,rework,merging,blocked
+```
 
 ### Step 4: Pick Work
 
-- Work on `in_progress` tasks first, then `todo`
+- Work on `in_progress` tasks first
+- Then pick `testing`, `rework`, or `merging`
+- Then `todo`
 - Skip `blocked` unless you can unblock it
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize it
 - If woken by a comment mention, read that comment thread first
@@ -50,7 +56,7 @@ Before doing any work, you must checkout the task:
 ```
 POST /api/issues/{issueId}/checkout
 Headers: X-Paperclip-Run-Id: {runId}
-{ "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked"] }
+{ "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "testing", "rework", "merging", "blocked"] }
 ```
 
 If already checked out by you, this succeeds. If another agent owns it: `409 Conflict` — stop and pick a different task. **Never retry a 409.**

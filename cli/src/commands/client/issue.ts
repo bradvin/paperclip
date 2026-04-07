@@ -246,7 +246,7 @@ export function registerIssueCommands(program: Command): void {
       .option(
         "--expected-statuses <csv>",
         "Expected current statuses",
-        "todo,backlog,blocked",
+        "todo,backlog,testing,rework,merging,blocked",
       )
       .action(async (issueId: string, opts: IssueCheckoutOptions) => {
         try {

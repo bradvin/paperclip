@@ -678,6 +678,7 @@ On server startup:
    - board-only list of task-scoped adapter sessions
 5. `POST /agents/:agentId/runtime-state/reset-session`
    - clears all task sessions for the agent, or one when `taskKey` is provided
+   - forces the next matching run to start fresh and ignore any saved session resume state
 6. `GET /heartbeat-runs/:runId/events?afterSeq=:n`
    - fetch persisted lightweight timeline
 7. `GET /heartbeat-runs/:runId/log`

@@ -21,7 +21,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseCodexJsonl, isCodexUnknownSessionError } from "./parse.js";
-import { pathExists, prepareWorktreeCodexHome, resolveCodexHomeDir } from "./codex-home.js";
+import { prepareWorktreeCodexHome, resolveCodexHomeDir } from "./codex-home.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const CODEX_ROLLOUT_NOISE_RE =
@@ -67,34 +67,6 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
 
-async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
-  const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
-    pathExists(path.join(candidate, "pnpm-workspace.yaml")),
-    pathExists(path.join(candidate, "package.json")),
-    pathExists(path.join(candidate, "server")),
-    pathExists(path.join(candidate, "packages", "adapter-utils")),
-  ]);
-
-  return hasWorkspace && hasPackageJson && hasServerDir && hasAdapterUtilsDir;
-}
-
-async function isLikelyPaperclipRuntimeSkillSource(candidate: string, skillName: string): Promise<boolean> {
-  if (path.basename(candidate) !== skillName) return false;
-  const skillsRoot = path.dirname(candidate);
-  if (path.basename(skillsRoot) !== "skills") return false;
-  if (!(await pathExists(path.join(candidate, "SKILL.md")))) return false;
-
-  let cursor = path.dirname(skillsRoot);
-  for (let depth = 0; depth < 6; depth += 1) {
-    if (await isLikelyPaperclipRepoRoot(cursor)) return true;
-    const parent = path.dirname(cursor);
-    if (parent === cursor) break;
-    cursor = parent;
-  }
-
-  return false;
-}
-
 type EnsureCodexSkillsInjectedOptions = {
   skillsHome?: string;
   skillsEntries?: Awaited<ReturnType<typeof listPaperclipSkillEntries>>;
@@ -125,31 +97,6 @@ export async function ensureCodexSkillsInjected(
     const target = path.join(skillsHome, entry.name);
 
     try {
-      const existing = await fs.lstat(target).catch(() => null);
-      if (existing?.isSymbolicLink()) {
-        const linkedPath = await fs.readlink(target).catch(() => null);
-        const resolvedLinkedPath = linkedPath
-          ? path.resolve(path.dirname(target), linkedPath)
-          : null;
-        if (
-          resolvedLinkedPath &&
-          resolvedLinkedPath !== entry.source &&
-          (await isLikelyPaperclipRuntimeSkillSource(resolvedLinkedPath, entry.name))
-        ) {
-          await fs.unlink(target);
-          if (linkSkill) {
-            await linkSkill(entry.source, target);
-          } else {
-            await fs.symlink(entry.source, target);
-          }
-          await onLog(
-            "stdout",
-            `[paperclip] Repaired Codex skill "${entry.name}" into ${skillsHome}\n`,
-          );
-          continue;
-        }
-      }
-
       const result = await ensurePaperclipSkillSymlink(entry.source, target, linkSkill);
       if (result === "skipped") continue;
 
@@ -171,7 +118,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
+    [
+      "You are agent {{agent.id}} ({{agent.name}}).",
+      "Use the $paperclip skill and follow its heartbeat procedure.",
+      "Treat PAPERCLIP_TASK_ID as the priority task when it is set.",
+      "Fetch task context and checkout through the Paperclip API before inspecting workspace files.",
+      "Do not infer the active task from repo contents.",
+    ].join(" "),
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");

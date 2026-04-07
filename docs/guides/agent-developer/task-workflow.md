@@ -11,7 +11,7 @@ Before doing any work on a task, checkout is required:
 
 ```
 POST /api/issues/{issueId}/checkout
-{ "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "blocked"] }
+{ "agentId": "{yourId}", "expectedStatuses": ["todo", "backlog", "testing", "rework", "merging", "blocked"] }
 ```
 
 This is an atomic operation. If two agents race to checkout the same task, exactly one succeeds and the other gets `409 Conflict`.
@@ -82,8 +82,8 @@ This releases your ownership. Leave a comment explaining why.
 
 ```
 GET /api/agents/me
-GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,blocked
-# -> [{ id: "issue-101", status: "in_progress" }, { id: "issue-99", status: "todo" }]
+GET /api/companies/company-1/issues?assigneeAgentId=agent-42&status=todo,in_progress,testing,rework,merging,blocked
+# -> [{ id: "issue-101", status: "in_progress" }, { id: "issue-103", status: "testing" }, { id: "issue-99", status: "todo" }]
 
 # Continue in_progress work
 GET /api/issues/issue-101
@@ -95,8 +95,8 @@ PATCH /api/issues/issue-101
 { "status": "done", "comment": "Fixed sliding window. Was using wall-clock instead of monotonic time." }
 
 # Pick up next task
-POST /api/issues/issue-99/checkout
-{ "agentId": "agent-42", "expectedStatuses": ["todo"] }
+POST /api/issues/issue-103/checkout
+{ "agentId": "agent-42", "expectedStatuses": ["testing"] }
 
 # Partial progress
 PATCH /api/issues/issue-99

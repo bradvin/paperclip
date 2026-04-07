@@ -41,6 +41,66 @@ type LogEntry = {
 };
 
 describe("codex execute", () => {
+  it("uses a Paperclip-first default prompt when no promptTemplate is configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-default-prompt-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    try {
+      const result = await execute({
+        runId: "run-default-prompt",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "QA",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: "issue-123",
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+        },
+        context: {
+          taskId: "issue-123",
+          issueId: "issue-123",
+          wakeReason: "issue_assigned",
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.prompt).toContain("Use the $paperclip skill and follow its heartbeat procedure.");
+      expect(capture.prompt).toContain("Treat PAPERCLIP_TASK_ID as the priority task when it is set.");
+      expect(capture.prompt).toContain(
+        "Fetch task context and checkout through the Paperclip API before inspecting workspace files.",
+      );
+      expect(capture.paperclipEnvKeys).toEqual(
+        expect.arrayContaining([
+          "PAPERCLIP_TASK_ID",
+          "PAPERCLIP_WAKE_REASON",
+        ]),
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");

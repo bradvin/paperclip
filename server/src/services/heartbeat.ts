@@ -68,6 +68,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const startLocksByAgent = new Map<string, Promise<void>>();
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const FORCE_FRESH_SESSION_RUNTIME_STATE_KEY = "paperclipForceFreshSession";
 const execFile = promisify(execFileCallback);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -510,6 +511,93 @@ function deriveTaskKey(
     readNonEmptyString(payload?.issueId) ??
     null
   );
+}
+
+function parseFreshSessionResetRuntimeState(
+  stateJson: Record<string, unknown> | null | undefined,
+) {
+  const parsed = parseObject(parseObject(stateJson)[FORCE_FRESH_SESSION_RUNTIME_STATE_KEY]);
+  const taskKeys = Array.isArray(parsed.taskKeys)
+    ? [
+        ...new Set(
+          parsed.taskKeys
+            .map((value) => readNonEmptyString(value))
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ]
+    : [];
+
+  return {
+    all: parsed.all === true,
+    taskKeys,
+  };
+}
+
+export function buildRuntimeStateJsonForSessionReset(
+  stateJson: Record<string, unknown> | null | undefined,
+  taskKey?: string | null,
+) {
+  const normalizedTaskKey = readNonEmptyString(taskKey);
+  if (!normalizedTaskKey) {
+    return {
+      [FORCE_FRESH_SESSION_RUNTIME_STATE_KEY]: {
+        all: true,
+      },
+    };
+  }
+
+  const nextStateJson = { ...parseObject(stateJson) };
+  const existing = parseFreshSessionResetRuntimeState(nextStateJson);
+  const nextTaskKeys = existing.taskKeys.includes(normalizedTaskKey)
+    ? existing.taskKeys
+    : [...existing.taskKeys, normalizedTaskKey];
+
+  nextStateJson[FORCE_FRESH_SESSION_RUNTIME_STATE_KEY] = existing.all
+    ? { all: true, taskKeys: nextTaskKeys }
+    : { taskKeys: nextTaskKeys };
+  return nextStateJson;
+}
+
+export function consumeRuntimeStateSessionReset(
+  stateJson: Record<string, unknown> | null | undefined,
+  taskKey?: string | null,
+) {
+  const nextStateJson = { ...parseObject(stateJson) };
+  const resetState = parseFreshSessionResetRuntimeState(nextStateJson);
+  const normalizedTaskKey = readNonEmptyString(taskKey);
+  const applies =
+    resetState.all ||
+    (normalizedTaskKey !== null && resetState.taskKeys.includes(normalizedTaskKey));
+
+  if (!applies) {
+    return {
+      applies: false,
+      reason: null,
+      stateJson: nextStateJson,
+    };
+  }
+
+  if (resetState.all) {
+    delete nextStateJson[FORCE_FRESH_SESSION_RUNTIME_STATE_KEY];
+    return {
+      applies: true,
+      reason: "the board reset sessions for this agent",
+      stateJson: nextStateJson,
+    };
+  }
+
+  const remainingTaskKeys = resetState.taskKeys.filter((value) => value !== normalizedTaskKey);
+  if (remainingTaskKeys.length > 0) {
+    nextStateJson[FORCE_FRESH_SESSION_RUNTIME_STATE_KEY] = { taskKeys: remainingTaskKeys };
+  } else {
+    delete nextStateJson[FORCE_FRESH_SESSION_RUNTIME_STATE_KEY];
+  }
+
+  return {
+    applies: true,
+    reason: "the board reset sessions for this task",
+    stateJson: nextStateJson,
+  };
 }
 
 export function shouldResetTaskSessionForWake(
@@ -1875,20 +1963,45 @@ export function heartbeatService(db: Db) {
               isolatedWorkspacesEnabled,
             ))
         : null;
-      const taskSession = taskKey
-      ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
-      : null;
-      const resetTaskSession = shouldResetTaskSessionForWake(context);
-      const sessionResetReason = describeSessionResetReason(context);
+      const runtimeStateSessionReset = consumeRuntimeStateSessionReset(runtime.stateJson, taskKey);
+      if (runtimeStateSessionReset.applies) {
+        await db
+          .update(agentRuntimeState)
+          .set({
+            stateJson: runtimeStateSessionReset.stateJson,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentRuntimeState.agentId, agent.id));
+        runtime.stateJson = runtimeStateSessionReset.stateJson;
+      }
+      const wakeRequestedSessionReset = shouldResetTaskSessionForWake(context);
+      const resetTaskSession = wakeRequestedSessionReset || runtimeStateSessionReset.applies;
+      const sessionResetReason =
+        describeSessionResetReason(context) ?? runtimeStateSessionReset.reason;
+      if (resetTaskSession) {
+        await clearTaskSessions(
+          agent.companyId,
+          agent.id,
+          taskKey
+            ? { taskKey, adapterType: agent.adapterType }
+            : runtimeStateSessionReset.applies
+              ? { adapterType: agent.adapterType }
+              : undefined,
+        );
+      }
+      const taskSession =
+        taskKey && !resetTaskSession
+          ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
+          : null;
       const taskSessionForRun = resetTaskSession ? null : taskSession;
       const previousSessionParams = normalizeSessionParams(
-      sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+        sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
       );
       const config = parseObject(agent.adapterConfig);
       const executionWorkspaceMode = resolveExecutionWorkspaceMode({
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
-      legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        projectPolicy: projectExecutionWorkspacePolicy,
+        issueSettings: issueExecutionWorkspaceSettings,
+        legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
       });
       const resolvedWorkspace = await resolveWorkspaceForRun(
       agent,
@@ -3517,7 +3630,7 @@ export function heartbeatService(db: Db) {
     resetRuntimeSession: async (agentId: string, opts?: { taskKey?: string | null }) => {
       const agent = await getAgent(agentId);
       if (!agent) throw notFound("Agent not found");
-      await ensureRuntimeState(agent);
+      const runtime = await ensureRuntimeState(agent);
       const taskKey = readNonEmptyString(opts?.taskKey);
       const clearedTaskSessions = await clearTaskSessions(
         agent.companyId,
@@ -3527,11 +3640,9 @@ export function heartbeatService(db: Db) {
       const runtimePatch: Partial<typeof agentRuntimeState.$inferInsert> = {
         sessionId: null,
         lastError: null,
+        stateJson: buildRuntimeStateJsonForSessionReset(runtime.stateJson, taskKey),
         updatedAt: new Date(),
       };
-      if (!taskKey) {
-        runtimePatch.stateJson = {};
-      }
 
       const updated = await db
         .update(agentRuntimeState)

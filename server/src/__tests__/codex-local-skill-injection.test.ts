@@ -21,6 +21,17 @@ async function createPaperclipRepoSkill(root: string, skillName: string) {
   );
 }
 
+async function createPaperclipAdapterPackageSkill(root: string, packageName: string, skillName: string) {
+  const packageRoot = path.join(root, "node_modules", ...packageName.split("/"));
+  await fs.mkdir(path.join(packageRoot, "skills", skillName), { recursive: true });
+  await fs.writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ name: packageName }) + "\n", "utf8");
+  await fs.writeFile(
+    path.join(packageRoot, "skills", skillName, "SKILL.md"),
+    `---\nname: ${skillName}\n---\n`,
+    "utf8",
+  );
+}
+
 async function createCustomSkill(root: string, skillName: string) {
   await fs.mkdir(path.join(root, "custom", skillName), { recursive: true });
   await fs.writeFile(
@@ -49,6 +60,43 @@ describe("codex local adapter skill injection", () => {
     await createPaperclipRepoSkill(currentRepo, "paperclip");
     await createPaperclipRepoSkill(oldRepo, "paperclip");
     await fs.symlink(path.join(oldRepo, "skills", "paperclip"), path.join(skillsHome, "paperclip"));
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    await ensureCodexSkillsInjected(
+      async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+      {
+        skillsHome,
+        skillsEntries: [{ name: "paperclip", source: path.join(currentRepo, "skills", "paperclip") }],
+      },
+    );
+
+    expect(await fs.realpath(path.join(skillsHome, "paperclip"))).toBe(
+      await fs.realpath(path.join(currentRepo, "skills", "paperclip")),
+    );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining('Repaired Codex skill "paperclip"'),
+      }),
+    );
+  });
+
+  it("repairs a Codex Paperclip skill symlink that still points at an installed adapter package", async () => {
+    const currentRepo = await makeTempDir("paperclip-codex-current-");
+    const oldPackageRoot = await makeTempDir("paperclip-codex-package-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(currentRepo);
+    cleanupDirs.add(oldPackageRoot);
+    cleanupDirs.add(skillsHome);
+
+    await createPaperclipRepoSkill(currentRepo, "paperclip");
+    await createPaperclipAdapterPackageSkill(oldPackageRoot, "@paperclipai/adapter-codex-local", "paperclip");
+    await fs.symlink(
+      path.join(oldPackageRoot, "node_modules", "@paperclipai", "adapter-codex-local", "skills", "paperclip"),
+      path.join(skillsHome, "paperclip"),
+    );
 
     const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
     await ensureCodexSkillsInjected(
